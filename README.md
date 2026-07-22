@@ -74,8 +74,9 @@ conda run -n raisim python scripts/generate_cli.py --scale 0.48 --home-x 0 --hom
 
 Printer limits are read from `printer.yaml` at the project root. `boundary`
 defines the absolute Ender 3 Pro limits, and `safety_margin` defines the inset
-printable area shown as the inner dotted rectangle in the preview. Since the
-buildplate visual lower-left maps to Home X/Y, its safe right edge is shown at
+printable area shown as the inner dotted rectangle in the preview. The green
+outer rectangle is the physical buildplate size. Since its lower-left maps to
+Home X/Y, the inner dotted safe right edge is shown at
 `boundary.x - safety_margin - home_x` relative to that lower-left point, and Y
 follows the same pattern.
 

@@ -26,17 +26,41 @@ class PrinterProfile:
     def absolute_y_max(self, settings: PlotterSettings) -> float:
         return self.boundary_y
 
+    def relative_safety_x_min(self, settings: PlotterSettings) -> float:
+        return max(self.safety_margin, self.safety_margin - settings.home_x)
+
+    def relative_safety_y_min(self, settings: PlotterSettings) -> float:
+        return max(self.safety_margin, self.safety_margin - settings.home_y)
+
+    def relative_safety_x_max(self, settings: PlotterSettings) -> float:
+        return min(
+            self.boundary_x - self.safety_margin,
+            self.boundary_x - self.safety_margin - settings.home_x,
+        )
+
+    def relative_safety_y_max(self, settings: PlotterSettings) -> float:
+        return min(
+            self.boundary_y - self.safety_margin,
+            self.boundary_y - self.safety_margin - settings.home_y,
+        )
+
     def safety_x_min(self, settings: PlotterSettings) -> float:
-        return max(self.safety_margin, settings.home_x + self.safety_margin)
+        return settings.home_x + self.relative_safety_x_min(settings)
 
     def safety_y_min(self, settings: PlotterSettings) -> float:
-        return max(self.safety_margin, settings.home_y + self.safety_margin)
+        return settings.home_y + self.relative_safety_y_min(settings)
 
     def safety_x_max(self, settings: PlotterSettings) -> float:
-        return self.boundary_x - self.safety_margin
+        return settings.home_x + self.relative_safety_x_max(settings)
 
     def safety_y_max(self, settings: PlotterSettings) -> float:
-        return self.boundary_y - self.safety_margin
+        return settings.home_y + self.relative_safety_y_max(settings)
+
+    def relative_safety_width(self, settings: PlotterSettings) -> float:
+        return max(0.0, self.relative_safety_x_max(settings) - self.relative_safety_x_min(settings))
+
+    def relative_safety_height(self, settings: PlotterSettings) -> float:
+        return max(0.0, self.relative_safety_y_max(settings) - self.relative_safety_y_min(settings))
 
 
 @dataclass(frozen=True)

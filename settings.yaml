@@ -2,8 +2,8 @@ active_file: raw/Actuator_HP_verU2_exploded.dxf
 home_x: 50.0
 home_y: 20.0
 home_z: 12.2
-origin_x: 167.16
-origin_y: -29.94
+origin_x: 74.58
+origin_y: -62.52
 z_hop: 0.5
 z_safe_height: 10.0
 scale: 0.5
@@ -19,4 +19,4 @@ crop:
   xmin: 84.57764419868309
   ymin: -52.516717621567125
   xmax: 344.7435865076881
-  ymax: 357.4832823784329
+  ymax: 334.5732554826801

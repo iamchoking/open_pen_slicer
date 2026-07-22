@@ -543,15 +543,8 @@ class PlotterApp(tk.Tk):
 
         settings = self._settings_from_ui(update_crop=False)
         scale = max(settings.scale, 0.0001)
-        margin = self.printer.safety_margin
-        max_width = max(
-            self.printer.boundary_x - margin * 2.0 - settings.home_x,
-            0.01,
-        )
-        max_height = max(
-            self.printer.boundary_y - margin * 2.0 - settings.home_y,
-            0.01,
-        )
+        max_width = max(self.printer.relative_safety_width(settings), 0.01)
+        max_height = max(self.printer.relative_safety_height(settings), 0.01)
         if self.crop:
             box = self.crop.normalized()
             xmin, ymin = box.xmin, box.ymin
@@ -578,9 +571,12 @@ class PlotterApp(tk.Tk):
         settings = self._settings_from_ui(update_crop=False)
         scale = max(settings.scale, 0.0001)
         crop = self.crop.normalized()
-        margin = self.printer.safety_margin
-        self.origin_x_var.set(_format_number(crop.xmin - margin / scale))
-        self.origin_y_var.set(_format_number(crop.ymin - margin / scale))
+        self.origin_x_var.set(
+            _format_number(crop.xmin - self.printer.relative_safety_x_min(settings) / scale)
+        )
+        self.origin_y_var.set(
+            _format_number(crop.ymin - self.printer.relative_safety_y_min(settings) / scale)
+        )
         self._update_dimension_readout()
 
     def _redraw_canvas(self) -> None:
@@ -1044,9 +1040,9 @@ class PlotterApp(tk.Tk):
         self, settings: PlotterSettings | None = None
     ) -> CropBox | None:
         settings = settings or self._settings_from_ui(update_crop=False)
-        return self._source_box_for_gcode_box(
-            settings.home_x,
-            settings.home_y,
+        return self._source_box_for_buildplate_box(
+            0.0,
+            0.0,
             self.printer.boundary_x,
             self.printer.boundary_y,
             settings,
@@ -1056,15 +1052,15 @@ class PlotterApp(tk.Tk):
         self, settings: PlotterSettings | None = None
     ) -> CropBox:
         settings = settings or self._settings_from_ui(update_crop=False)
-        return self._source_box_for_gcode_box(
-            self.printer.safety_x_min(settings),
-            self.printer.safety_y_min(settings),
-            self.printer.safety_x_max(settings),
-            self.printer.safety_y_max(settings),
+        return self._source_box_for_buildplate_box(
+            self.printer.relative_safety_x_min(settings),
+            self.printer.relative_safety_y_min(settings),
+            self.printer.relative_safety_x_max(settings),
+            self.printer.relative_safety_y_max(settings),
             settings,
         )
 
-    def _source_box_for_gcode_box(
+    def _source_box_for_buildplate_box(
         self,
         xmin: float,
         ymin: float,
@@ -1074,10 +1070,10 @@ class PlotterApp(tk.Tk):
     ) -> CropBox:
         scale = max(settings.scale, 0.0001)
         return CropBox(
-            xmin=settings.origin_x + (xmin - settings.home_x) / scale,
-            ymin=settings.origin_y + (ymin - settings.home_y) / scale,
-            xmax=settings.origin_x + (xmax - settings.home_x) / scale,
-            ymax=settings.origin_y + (ymax - settings.home_y) / scale,
+            xmin=settings.origin_x + xmin / scale,
+            ymin=settings.origin_y + ymin / scale,
+            xmax=settings.origin_x + xmax / scale,
+            ymax=settings.origin_y + ymax / scale,
         ).normalized()
 
     def _origin_source_point(
