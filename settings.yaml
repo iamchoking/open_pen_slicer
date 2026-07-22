@@ -1,22 +1,22 @@
-active_file: raw/Actuator_HP_verU2_exploded.dxf
-home_x: 50.0
-home_y: 20.0
+active_file: raw/raipal-mech_pen-plot_FORE.DXF
+home_x: 38.0
+home_y: 21.0
 home_z: 12.2
-origin_x: 74.58
-origin_y: -62.52
+origin_x: 76.98
+origin_y: 28.73
 z_hop: 0.5
 z_safe_height: 10.0
-scale: 0.5
-rotation_quarters: 1
+scale: 1.4
+rotation_quarters: 0
 bounding_box_repeat: 2
-bounding_box_offset: 0.5
+bounding_box_offset: 2.0
 bounding_box_feed: 1500.0
 draw_feed: 3000.0
 travel_feed: 5000.0
 curve_tolerance: 0.35
 target_directory: D:\
 crop:
-  xmin: 84.57764419868309
-  ymin: -52.516717621567125
-  xmax: 344.7435865076881
-  ymax: 334.5732554826801
+  xmin: 115.8239020668
+  ymin: 61.10875447693334
+  xmax: 178.8472981144029
+  ymax: 149.2061750741

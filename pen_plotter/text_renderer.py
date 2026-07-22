@@ -316,6 +316,7 @@ def _common_cad_roots() -> list[Path]:
         Path("C:/Program Files/Autodesk"),
         Path("C:/Program Files (x86)/Autodesk"),
         Path("C:/ProgramData/Autodesk"),
+        Path.home() / "AppData/Local/Autodesk",
         Path.home() / "AppData/Roaming/Autodesk",
         Path("C:/Program Files/Bricsys"),
         Path("C:/Program Files (x86)/Bricsys"),

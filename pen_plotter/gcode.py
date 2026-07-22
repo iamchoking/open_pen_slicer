@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from math import hypot
 from pathlib import Path
 
 from .geometry import Stroke, plot_bounds_for_crop, total_path_length
 from .printer import load_printer_profile
 from .settings import CropBox, PlotterSettings
+
+
+BOUNDING_BOX_DASH_MM = 5.0
+BOUNDING_BOX_GAP_MM = 5.0
 
 
 @dataclass
@@ -35,7 +40,8 @@ def generate_gcode(
     safe_z = settings.home_z + settings.z_safe_height
     z_move_feed = settings.travel_feed
     travel_count = 0
-    crop_outlines = _crop_outline_strokes(crop, settings)
+    crop_outline_box = _crop_outline_box(crop, settings)
+    crop_outline_boxes = _crop_outline_boxes(crop, settings)
     crop_outline_feed = settings.bounding_box_feed
     printer = load_printer_profile()
 
@@ -57,26 +63,37 @@ def generate_gcode(
         ]
     )
 
-    for pass_index, crop_outline in enumerate(crop_outlines, start=1):
-        travel_count += 1
-        offset = (pass_index - 1) * settings.bounding_box_offset
-        outline_pen_up_z = safe_z if pass_index == 1 else pen_up_z
-        _append_stroke(
+    if settings.bounding_box_repeat == 0 and crop_outline_box:
+        travel_count += _append_box_vertices(
             lines=lines,
-            stroke=crop_outline,
+            box=crop_outline_box,
+            label="Selected crop box vertices",
+            pen_down_z=pen_down_z,
+            pen_up_z=pen_up_z,
+            first_travel_z=safe_z,
+            travel_feed=settings.travel_feed,
+            z_move_feed=z_move_feed,
+        )
+    for pass_index, crop_outline_box in enumerate(crop_outline_boxes, start=1):
+        offset = (pass_index - 1) * settings.bounding_box_offset
+        first_travel_z = safe_z if pass_index == 1 else pen_up_z
+        travel_count += _append_dotted_box(
+            lines=lines,
+            box=crop_outline_box,
             label=(
-                "Selected crop box outline "
+                "Selected dotted crop box outline "
                 f"{pass_index}/{settings.bounding_box_repeat} "
                 f"(+{_fmt(offset)} mm)"
             ),
             pen_down_z=pen_down_z,
-            pen_up_z=outline_pen_up_z,
+            pen_up_z=pen_up_z,
+            first_travel_z=first_travel_z,
             travel_feed=settings.travel_feed,
             draw_feed=crop_outline_feed,
             z_move_feed=z_move_feed,
         )
-    if crop_outlines:
-        lines.append(f"G0 Z{_fmt(pen_up_z)} F{_fmt(z_move_feed)} ; pen up after crop outlines")
+    if crop_outline_box:
+        lines.append(f"G0 Z{_fmt(pen_up_z)} F{_fmt(z_move_feed)} ; pen up after crop bounds")
 
     for index, stroke in enumerate(strokes, start=1):
         if len(stroke) < 2:
@@ -121,30 +138,69 @@ def generate_gcode(
     )
 
 
-def _append_stroke(
+def _append_dotted_box(
     lines: list[str],
-    stroke: Stroke,
+    box: CropBox,
     label: str,
     pen_down_z: float,
     pen_up_z: float,
+    first_travel_z: float,
     travel_feed: float,
     draw_feed: float,
     z_move_feed: float,
-) -> None:
-    if len(stroke) < 2:
-        return
+) -> int:
+    dashes = _dotted_outline_strokes(box)
+    if not dashes:
+        return 0
 
-    start = stroke[0]
-    lines.extend(
-        [
-            f"; {label}",
-            f"G0 Z{_fmt(pen_up_z)} F{_fmt(z_move_feed)}",
-            f"G0 X{_fmt(start[0])} Y{_fmt(start[1])} F{_fmt(travel_feed)}",
-            f"G1 Z{_fmt(pen_down_z)} F{_fmt(z_move_feed)} ; pen down",
-        ]
+    lines.append(
+        f"; {label} ({_fmt(BOUNDING_BOX_DASH_MM)} mm dash, "
+        f"{_fmt(BOUNDING_BOX_GAP_MM)} mm hop gap)"
     )
-    for x, y in stroke[1:]:
-        lines.append(f"G1 X{_fmt(x)} Y{_fmt(y)} F{_fmt(draw_feed)}")
+    travel_count = 0
+    for dash_index, dash in enumerate(dashes):
+        start = dash[0]
+        lift_z = first_travel_z if dash_index == 0 else pen_up_z
+        lines.extend(
+            [
+                f"G0 Z{_fmt(lift_z)} F{_fmt(z_move_feed)}",
+                f"G0 X{_fmt(start[0])} Y{_fmt(start[1])} F{_fmt(travel_feed)}",
+                f"G1 Z{_fmt(pen_down_z)} F{_fmt(z_move_feed)} ; pen down",
+            ]
+        )
+        travel_count += 1
+        for x, y in dash[1:]:
+            lines.append(f"G1 X{_fmt(x)} Y{_fmt(y)} F{_fmt(draw_feed)}")
+        lines.append(f"G0 Z{_fmt(pen_up_z)} F{_fmt(z_move_feed)} ; hop gap")
+    return travel_count
+
+
+def _append_box_vertices(
+    lines: list[str],
+    box: CropBox,
+    label: str,
+    pen_down_z: float,
+    pen_up_z: float,
+    first_travel_z: float,
+    travel_feed: float,
+    z_move_feed: float,
+) -> int:
+    corners = _box_corners(box)
+    if not corners:
+        return 0
+
+    lines.append(f"; {label}")
+    for corner_index, corner in enumerate(corners):
+        lift_z = first_travel_z if corner_index == 0 else pen_up_z
+        lines.extend(
+            [
+                f"G0 Z{_fmt(lift_z)} F{_fmt(z_move_feed)}",
+                f"G0 X{_fmt(corner[0])} Y{_fmt(corner[1])} F{_fmt(travel_feed)}",
+                f"G1 Z{_fmt(pen_down_z)} F{_fmt(z_move_feed)} ; mark vertex",
+                f"G0 Z{_fmt(pen_up_z)} F{_fmt(z_move_feed)} ; pen up after vertex",
+            ]
+        )
+    return len(corners)
 
 
 def plot_bounds_including_preflight(crop: CropBox, settings: PlotterSettings) -> CropBox:
@@ -159,13 +215,20 @@ def plot_bounds_including_preflight(crop: CropBox, settings: PlotterSettings) ->
     )
 
 
-def _crop_outline_strokes(crop: CropBox, settings: PlotterSettings) -> list[Stroke]:
+def _crop_outline_box(crop: CropBox, settings: PlotterSettings) -> CropBox | None:
     settings.validate()
     box = plot_bounds_for_crop(crop, settings).normalized()
     if box.width <= 0.0 or box.height <= 0.0:
+        return None
+    return box
+
+
+def _crop_outline_boxes(crop: CropBox, settings: PlotterSettings) -> list[CropBox]:
+    box = _crop_outline_box(crop, settings)
+    if box is None or settings.bounding_box_repeat <= 0:
         return []
     return [
-        _box_outline_stroke(_expand_box(box, index * settings.bounding_box_offset))
+        _expand_box(box, index * settings.bounding_box_offset)
         for index in range(settings.bounding_box_repeat)
     ]
 
@@ -187,6 +250,61 @@ def _box_outline_stroke(box: CropBox) -> Stroke:
         (box.xmin, box.ymax),
         (box.xmin, box.ymin),
     ]
+
+
+def _box_corners(box: CropBox) -> Stroke:
+    box = box.normalized()
+    return [
+        (box.xmin, box.ymin),
+        (box.xmax, box.ymin),
+        (box.xmax, box.ymax),
+        (box.xmin, box.ymax),
+    ]
+
+
+def _dotted_outline_strokes(box: CropBox) -> list[Stroke]:
+    outline = _box_outline_stroke(box.normalized())
+    dashes: list[Stroke] = []
+    drawing = True
+    pattern_remaining = BOUNDING_BOX_DASH_MM
+    active_dash: Stroke | None = None
+
+    for start, end in zip(outline, outline[1:]):
+        sx, sy = start
+        ex, ey = end
+        edge_length = hypot(ex - sx, ey - sy)
+        if edge_length <= 1e-9:
+            continue
+
+        edge_position = 0.0
+        cursor = start
+        while edge_position < edge_length - 1e-9:
+            step = min(pattern_remaining, edge_length - edge_position)
+            next_position = edge_position + step
+            ratio = next_position / edge_length
+            next_point = (sx + (ex - sx) * ratio, sy + (ey - sy) * ratio)
+
+            if drawing:
+                if active_dash is None:
+                    active_dash = [cursor]
+                active_dash.append(next_point)
+
+            cursor = next_point
+            edge_position = next_position
+            pattern_remaining -= step
+
+            if pattern_remaining <= 1e-9:
+                if drawing and active_dash and len(active_dash) >= 2:
+                    dashes.append(active_dash)
+                    active_dash = None
+                drawing = not drawing
+                pattern_remaining = (
+                    BOUNDING_BOX_DASH_MM if drawing else BOUNDING_BOX_GAP_MM
+                )
+
+    if active_dash and len(active_dash) >= 2:
+        dashes.append(active_dash)
+    return dashes
 
 
 def _fmt(value: float) -> str:

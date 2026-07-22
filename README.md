@@ -9,8 +9,8 @@ The generated G-code:
 - uses millimeters and absolute positioning
 - homes the printer
 - lifts to `home_z + z_safe_height` before plotting and before the final top-left move
-- traces the selected crop box before the drawing, using configurable repeat,
-  outward offset, and feed settings
+- traces the selected crop box before the drawing as 5 mm dotted lines with
+  lifted 5 mm gaps, using configurable repeat, outward offset, and feed settings
 - lifts/drops Z for pen up/down strokes
 - never emits extrusion moves
 - never heats the hotend or bed
@@ -37,7 +37,7 @@ conda run -n raisim python scripts/run_ui.py
 ```
 
 3. Press **Crop**, then drag or resize the orange crop box in the preview.
-4. Press **Origin**, then drag the green Ender 3 Pro buildplate outline to place its blue lower-left home marker in the DXF.
+4. Press **Set Origin**, then drag the green Ender 3 Pro buildplate outline to place its blue lower-left home marker in the DXF, or press **Center** to center the crop inside the dotted printable area.
 5. Set scale, rotate the DXF if needed, then set Home X/Y/Z, Z hop, Z safe
    height, feed rates, and bounding box settings.
 6. Choose **Target Directory**.
@@ -48,7 +48,7 @@ on the lower-left of the buildplate visual. **Origin (mm)** is the source DXF
 coordinate where that lower-left buildplate point is placed. **Crop (mm)** shows
 the red crop rectangle as `X / Y / Xlen / Ylen`.
 
-When neither **Crop** nor **Origin** is active, dragging pans the preview and
+When neither **Crop** nor **Set Origin** is active, dragging pans the preview and
 `Ctrl` + mouse wheel zooms around the cursor.
 
 The **Target Directory** dropdown includes `Downloads` and plugged-in removable
@@ -85,6 +85,9 @@ absolute boundary, G-code generation is refused. If they stay inside the
 absolute boundary but enter the safety margin, the UI/CLI shows a warning and
 still writes the G-code. Home Z is treated as pen down height; pen up height is
 `home_z + z_hop`, and safe travel height is `home_z + z_safe_height`.
+
+Set bounding box repeat to `0` to plot only the four crop-box vertices instead
+of the dotted outline.
 
 ## Text Fonts
 

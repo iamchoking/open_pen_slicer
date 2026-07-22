@@ -213,12 +213,12 @@ class PlotterApp(tk.Tk):
         )
         self.origin_button = ttk.Button(
             origin_group,
-            text="Origin",
+            text="Set Origin",
             style="Mode.TButton",
             command=self._toggle_origin_mode,
         )
         self.origin_button.grid(row=1, column=0, sticky="ew", padx=(0, 6))
-        ttk.Button(origin_group, text="Reset Origin", command=self._reset_origin).grid(
+        ttk.Button(origin_group, text="Center", command=self._center_origin).grid(
             row=1, column=1, sticky="ew"
         )
 
@@ -561,7 +561,7 @@ class PlotterApp(tk.Tk):
         self._redraw_canvas()
         self._update_dimension_readout()
 
-    def _reset_origin(self) -> None:
+    def _center_origin(self) -> None:
         if not self.crop:
             self.origin_x_var.set("0")
             self.origin_y_var.set("0")
@@ -571,11 +571,21 @@ class PlotterApp(tk.Tk):
         settings = self._settings_from_ui(update_crop=False)
         scale = max(settings.scale, 0.0001)
         crop = self.crop.normalized()
+        crop_center_x = (crop.xmin + crop.xmax) / 2.0
+        crop_center_y = (crop.ymin + crop.ymax) / 2.0
+        printable_center_x = (
+            self.printer.relative_safety_x_min(settings)
+            + self.printer.relative_safety_x_max(settings)
+        ) / 2.0
+        printable_center_y = (
+            self.printer.relative_safety_y_min(settings)
+            + self.printer.relative_safety_y_max(settings)
+        ) / 2.0
         self.origin_x_var.set(
-            _format_number(crop.xmin - self.printer.relative_safety_x_min(settings) / scale)
+            _format_number(crop_center_x - printable_center_x / scale)
         )
         self.origin_y_var.set(
-            _format_number(crop.ymin - self.printer.relative_safety_y_min(settings) / scale)
+            _format_number(crop_center_y - printable_center_y / scale)
         )
         self._update_dimension_readout()
 
