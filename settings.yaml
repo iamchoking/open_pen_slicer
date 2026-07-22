@@ -1,0 +1,22 @@
+active_file: raw/Actuator_HP_verU2_exploded.dxf
+home_x: 50.0
+home_y: 20.0
+home_z: 12.2
+origin_x: 167.16
+origin_y: -29.94
+z_hop: 0.5
+z_safe_height: 10.0
+scale: 0.5
+rotation_quarters: 1
+bounding_box_repeat: 2
+bounding_box_offset: 0.5
+bounding_box_feed: 1500.0
+draw_feed: 3000.0
+travel_feed: 5000.0
+curve_tolerance: 0.35
+target_directory: D:\
+crop:
+  xmin: 84.57764419868309
+  ymin: -52.516717621567125
+  xmax: 344.7435865076881
+  ymax: 357.4832823784329
