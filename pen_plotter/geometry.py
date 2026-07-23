@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from math import atan2, degrees, hypot, isfinite
+from math import atan2, cos, degrees, hypot, isfinite, pi, radians, sin
 from pathlib import Path
 from typing import Iterable
 
@@ -74,6 +74,14 @@ def load_dxf_drawing(
             continue
 
         color = _entity_color(doc, entity)
+        special_strokes = _entity_to_special_strokes(doc, entity, curve_tolerance)
+        if special_strokes:
+            strokes.extend(special_strokes)
+            preview_strokes.extend(
+                PreviewStroke(stroke, color) for stroke in special_strokes
+            )
+            continue
+
         label = _entity_to_text_label(entity, color)
         if label:
             text_labels.append(label)
@@ -92,6 +100,7 @@ def load_dxf_drawing(
         except TypeError:
             preview_stroke = _entity_to_preview_stroke(entity)
             if preview_stroke and _stroke_length(preview_stroke) > 0.001:
+                strokes.append(preview_stroke)
                 preview_strokes.append(PreviewStroke(preview_stroke, color))
             else:
                 skipped_counts[dxftype] += 1
@@ -343,6 +352,191 @@ def _entity_to_stroke(entity, curve_tolerance: float) -> Stroke | None:
     return _dedupe_stroke(points)
 
 
+def _entity_to_special_strokes(doc, entity, curve_tolerance: float) -> list[Stroke]:
+    dxftype = entity.dxftype()
+    if dxftype == "TOLERANCE":
+        return _entity_to_tolerance_strokes(doc, entity, curve_tolerance)
+    if dxftype == "LEADER":
+        return _entity_to_leader_strokes(doc, entity)
+    return []
+
+
+def _entity_to_leader_strokes(doc, entity) -> list[Stroke]:
+    if not hasattr(entity, "vertices"):
+        return []
+
+    points = [
+        (float(point[0]), float(point[1]))
+        for point in entity.vertices
+        if len(point) >= 2 and isfinite(point[0]) and isfinite(point[1])
+    ]
+    points = _dedupe_stroke(points)
+    if len(points) < 2:
+        return []
+
+    strokes: list[Stroke] = [points]
+    arrow_size = max(_dimstyle_float(doc, entity, "dimasz", 1.5), 0.8)
+    strokes.extend(_open_arrowhead(points[0], points[1], arrow_size))
+    return strokes
+
+
+def _open_arrowhead(tip: Point, next_point: Point, size: float) -> list[Stroke]:
+    dx = next_point[0] - tip[0]
+    dy = next_point[1] - tip[1]
+    length = hypot(dx, dy)
+    if length <= 1e-9:
+        return []
+
+    ux = dx / length
+    uy = dy / length
+    angle = radians(25.0)
+    ca = cos(angle)
+    sa = sin(angle)
+    side_a = (ux * ca - uy * sa, ux * sa + uy * ca)
+    side_b = (ux * ca + uy * sa, -ux * sa + uy * ca)
+    return [
+        [tip, (tip[0] + side_a[0] * size, tip[1] + side_a[1] * size)],
+        [tip, (tip[0] + side_b[0] * size, tip[1] + side_b[1] * size)],
+    ]
+
+
+def _entity_to_tolerance_strokes(
+    doc,
+    entity,
+    curve_tolerance: float,
+) -> list[Stroke]:
+    content = str(entity.dxf.get("content", "")).strip()
+    fields = _parse_tolerance_fields(content)
+    insert = _entity_text_insert(entity)
+    if not fields or insert is None:
+        return []
+
+    dim_text_height = max(_dimstyle_float(doc, entity, "dimtxt", 2.5), 0.5)
+    frame_text_height = dim_text_height * 0.78
+    frame_height = dim_text_height * 1.65
+    pad_x = frame_text_height * 0.8
+    field_specs: list[tuple[str, str, float]] = []
+    for kind, value in fields:
+        if kind == "position":
+            width = frame_height * 1.2
+        else:
+            text_bounds = compute_bounds(
+                render_text(
+                    value,
+                    insert=(0.0, 0.0),
+                    height=frame_text_height,
+                    width_factor=0.75,
+                    anchor="sw",
+                )
+            )
+            width = max(text_bounds.width + pad_x * 2.0, frame_height)
+        field_specs.append((kind, value, width))
+
+    x0 = float(insert.x)
+    y0 = float(insert.y) - frame_height / 2.0
+    total_width = sum(width for _kind, _value, width in field_specs)
+    strokes: list[Stroke] = []
+    strokes.extend(_box_strokes(x0, y0, x0 + total_width, y0 + frame_height))
+
+    cursor = x0
+    for index, (kind, value, width) in enumerate(field_specs):
+        if index:
+            strokes.append([(cursor, y0), (cursor, y0 + frame_height)])
+
+        center = (cursor + width / 2.0, y0 + frame_height / 2.0)
+        if kind == "position":
+            strokes.extend(_position_symbol_strokes(center, frame_text_height * 0.34))
+        else:
+            strokes.extend(_centered_text_strokes(value, center, frame_text_height))
+        cursor += width
+
+    return [stroke for stroke in strokes if _stroke_length(stroke) > 0.001]
+
+
+def _centered_text_strokes(
+    text: str,
+    center: Point,
+    height: float,
+    width_factor: float = 0.75,
+) -> list[Stroke]:
+    text_strokes = render_text(
+        text,
+        insert=(0.0, 0.0),
+        height=height,
+        width_factor=width_factor,
+        anchor="sw",
+    )
+    if not text_strokes:
+        return []
+
+    bounds = compute_bounds(text_strokes)
+    dx = center[0] - (bounds.xmin + bounds.xmax) / 2.0
+    dy = center[1] - (bounds.ymin + bounds.ymax) / 2.0
+    return [[(x + dx, y + dy) for x, y in stroke] for stroke in text_strokes]
+
+
+def _parse_tolerance_fields(content: str) -> list[tuple[str, str]]:
+    fields: list[tuple[str, str]] = []
+    for raw_token in content.replace("^J", "").split("%%v"):
+        token = _clean_tolerance_token(raw_token)
+        if not token:
+            continue
+        if token == "j":
+            fields.append(("position", token))
+        else:
+            fields.append(("text", token))
+    return fields
+
+
+def _clean_tolerance_token(token: str) -> str:
+    token = token.strip().replace("{", "").replace("}", "")
+    while token.startswith("\\F") and ";" in token:
+        token = token.split(";", 1)[1]
+    token = token.replace("%%c", "\u00d8").replace("%%C", "\u00d8")
+    token = token.replace("\\P", " ").replace("\\~", " ")
+    return token.strip()
+
+
+def _box_strokes(xmin: float, ymin: float, xmax: float, ymax: float) -> list[Stroke]:
+    return [
+        [(xmin, ymin), (xmax, ymin)],
+        [(xmax, ymin), (xmax, ymax)],
+        [(xmax, ymax), (xmin, ymax)],
+        [(xmin, ymax), (xmin, ymin)],
+    ]
+
+
+def _position_symbol_strokes(center: Point, radius: float) -> list[Stroke]:
+    x, y = center
+    radius = max(radius, 0.1)
+    circle: Stroke = []
+    segments = 24
+    for index in range(segments + 1):
+        angle = 2.0 * pi * index / segments
+        circle.append((x + cos(angle) * radius, y + sin(angle) * radius))
+    return [
+        circle,
+        [(x - radius * 1.65, y), (x + radius * 1.65, y)],
+        [(x, y - radius * 1.65), (x, y + radius * 1.65)],
+    ]
+
+
+def _dimstyle_float(doc, entity, attr: str, fallback: float) -> float:
+    if entity.dxf.hasattr(attr):
+        return _dxf_float(entity, attr, fallback)
+    if entity.dxf.hasattr("dimstyle"):
+        try:
+            dimstyle = doc.dimstyles.get(entity.dxf.dimstyle)
+            value = getattr(dimstyle.dxf, attr)
+        except (AttributeError, ezdxf.DXFTableEntryError):
+            return fallback
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return fallback
+    return fallback
+
+
 def _entity_to_preview_stroke(entity) -> Stroke | None:
     dxftype = entity.dxftype()
     if dxftype == "LEADER" and hasattr(entity, "vertices"):
@@ -467,7 +661,7 @@ def _dxf_float(entity, attr: str, fallback: float) -> float:
 
 def _entity_to_text_label(entity, color: str) -> TextLabel | None:
     dxftype = entity.dxftype()
-    if dxftype not in {"TEXT", "MTEXT", "ATTRIB", "ATTDEF", "TOLERANCE"}:
+    if dxftype not in {"TEXT", "MTEXT", "ATTRIB", "ATTDEF"}:
         return None
 
     text = _clean_dxf_text(_entity_text_plain(entity))
