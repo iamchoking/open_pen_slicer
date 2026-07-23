@@ -1,17 +1,21 @@
-active_file: raw/raipal-mech_pen-plot_FORE.DXF
+active_file: C:\Users\plann\Downloads\pen-plotting\mech_shoulder_front.DXF
+recent_files:
+- C:\Users\plann\Downloads\pen-plotting\mech_shoulder_front.DXF
 device_id: CE3PRO
-origin_x: 76.98
-origin_y: 28.73
-scale: 1.4
-rotation_quarters: 0
-bounding_box_repeat: 2
+origin_x: 164.27
+origin_y: -66.82
+scale: 1.0
+rotation_quarters: 1
+bounding_box_repeat: 1
 bounding_box_offset: 2.0
 bounding_box_speed: 25.0
 curve_tolerance: 0.35
-target_directory: Downloads
-output_filename: '[pen_plotter] raipal-mech_pen-plot_FORE.gcode'
+target_directory: D:\
+clear_before_write: true
+eject_after_write: true
+output_filename: '[ops] mech_shoulder_front.gcode'
 crop:
-  xmin: 115.8239020668
-  ymin: 61.10875447693334
-  xmax: 178.8472981144029
-  ymax: 149.2061750741
+  xmin: 180.8923151125402
+  ymin: -36.934758842443735
+  xmax: 344.65180064308686
+  ymax: 117.30382636655949

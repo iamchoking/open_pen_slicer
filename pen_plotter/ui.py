@@ -5,7 +5,17 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from .gcode import generate_gcode, plot_bounds_including_preflight
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except ImportError:  # pragma: no cover - dependency is listed for runtime installs.
+    DND_FILES = None
+    TkinterDnD = None
+
+from .gcode import (
+    bounding_box_dotted_strokes,
+    generate_gcode,
+    plot_bounds_including_preflight,
+)
 from .geometry import (
     Drawing,
     crop_box_center,
@@ -18,7 +28,7 @@ from .geometry import (
 )
 from .settings import (
     DEFAULT_SETTINGS_PATH,
-    DOWNLOADS_DIR,
+    MAX_RECENT_FILES,
     PROJECT_ROOT,
     TARGET_DOWNLOADS,
     CropBox,
@@ -30,7 +40,12 @@ from .settings import (
     save_settings,
     target_directory_path,
 )
-from .target_directories import TargetDirectoryChoice, list_target_directories
+from .target_directories import (
+    TargetDirectoryChoice,
+    clear_gcode_files_from_target,
+    eject_target_directory,
+    list_target_directories,
+)
 from .printer import (
     BoundaryCheck,
     DEFAULT_DEVICES_DIR,
@@ -40,7 +55,6 @@ from .printer import (
 )
 
 
-RAW_DIR = PROJECT_ROOT / "raw"
 NARROW_ENTRY_WIDTH = 4
 SCALE_ENTRY_WIDTH = 7
 MENU_WIDTH = 16
@@ -48,7 +62,10 @@ OUTPUT_FIELD_WIDTH = 16
 SETTINGS_CONTROL_WIDTH = 190
 
 
-class PlotterApp(tk.Tk):
+_TkBase = TkinterDnD.Tk if TkinterDnD is not None else tk.Tk
+
+
+class PlotterApp(_TkBase):
     def __init__(self) -> None:
         super().__init__()
         self.title("Open Pen Slicer")
@@ -77,6 +94,7 @@ class PlotterApp(tk.Tk):
         self.rotation_quarters = self.settings.rotation_quarters
         self.target_directory_choices: dict[str, TargetDirectoryChoice] = {}
         self.device_label_to_id: dict[str, str] = {}
+        self.file_label_to_path: dict[str, Path] = {}
 
         self._line_item_ids: list[int] = []
         self._text_item_ids: list[int] = []
@@ -89,6 +107,7 @@ class PlotterApp(tk.Tk):
         self._refresh_target_directories()
         self._refresh_file_list()
         self._select_initial_file()
+        self._setup_drag_and_drop()
 
         self.canvas.bind("<Configure>", lambda _event: self._redraw_canvas())
         self.after(50, self._load_current_file)
@@ -154,6 +173,7 @@ class PlotterApp(tk.Tk):
         self.canvas.bind("<Control-Button-5>", lambda event: self._zoom_at(event, 1.15))
 
         panel = ttk.Frame(self, style="Panel.TFrame", padding=(10, 14))
+        self.panel = panel
         panel.grid(row=0, column=1, sticky="ns")
         panel.columnconfigure(0, weight=1)
 
@@ -168,6 +188,8 @@ class PlotterApp(tk.Tk):
         self.origin_y_var = self._field_var(self.settings.origin_y)
         self.output_filename_var = tk.StringVar(value=self.settings.output_filename or "")
         self.target_directory_var = tk.StringVar()
+        self.clear_before_write_var = tk.BooleanVar(value=self.settings.clear_before_write)
+        self.eject_after_write_var = tk.BooleanVar(value=self.settings.eject_after_write)
         self.device_bounds_var = tk.StringVar()
         self.device_home_var = tk.StringVar()
         self.device_z_height_var = tk.StringVar()
@@ -184,7 +206,7 @@ class PlotterApp(tk.Tk):
         self.plot_bounds_var = tk.StringVar(value="Bounds: -")
         self.bounds_warning_var = tk.StringVar(value="")
         self.entity_var = tk.StringVar(value="No DXF loaded")
-        self.status_var = tk.StringVar(value="Drop a DXF into raw/ and reload.")
+        self.status_var = tk.StringVar(value="Drop a DXF file into the UI to load it.")
 
         row = 0
 
@@ -262,9 +284,14 @@ class PlotterApp(tk.Tk):
         )
         file_controls = controls_frame(0)
         file_controls.columnconfigure(0, weight=1)
-        self.file_menu = ttk.OptionMenu(file_controls, self.file_var, "")
-        self.file_menu.configure(width=MENU_WIDTH)
+        self.file_menu = ttk.Combobox(
+            file_controls,
+            textvariable=self.file_var,
+            state="readonly",
+            width=MENU_WIDTH,
+        )
         self.file_menu.grid(row=0, column=0, sticky="ew")
+        self.file_menu.bind("<<ComboboxSelected>>", self._on_file_selected)
         ttk.Button(file_controls, text="Reload", width=7, command=self._load_current_file).grid(
             row=0, column=1, sticky="w", padx=(6, 0)
         )
@@ -353,11 +380,20 @@ class PlotterApp(tk.Tk):
                 row=0,
                 column=index * 2 + 1,
                 sticky="w",
-            )
+        )
 
         preview_group = add_section("Preview")
+        preview_group.columnconfigure(0, weight=1)
         ttk.Label(preview_group, textvariable=self.plot_size_var, style="Metric.TLabel").grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 3)
+            row=0, column=0, sticky="w", pady=(0, 3)
+        )
+        ttk.Button(
+            preview_group,
+            text="Fit Screen",
+            width=9,
+            command=self._fit_screen,
+        ).grid(
+            row=0, column=1, sticky="e", pady=(0, 3)
         )
         ttk.Label(
             preview_group,
@@ -373,13 +409,14 @@ class PlotterApp(tk.Tk):
         ).grid(row=2, column=0, columnspan=2, sticky="w")
 
         output_group = add_section("Output", pady=(0, 0))
+        output_group.columnconfigure(1, weight=1)
         ttk.Label(output_group, text="Filename").grid(
             row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 5)
         )
         ttk.Entry(output_group, textvariable=self.output_filename_var, width=OUTPUT_FIELD_WIDTH).grid(
-            row=0, column=1, sticky="w", pady=(0, 5)
+            row=0, column=1, sticky="ew", pady=(0, 5)
         )
-        ttk.Label(output_group, text="Target Directory").grid(
+        ttk.Label(output_group, text="Write To: ").grid(
             row=1, column=0, sticky="w", padx=(0, 8), pady=(0, 6)
         )
         self.target_directory_menu = ttk.Combobox(
@@ -389,24 +426,48 @@ class PlotterApp(tk.Tk):
             width=OUTPUT_FIELD_WIDTH,
         )
         self.target_directory_menu.grid(
-            row=1, column=1, sticky="w", pady=(0, 6)
+            row=1, column=1, sticky="ew", pady=(0, 6)
         )
         self.target_directory_menu.bind(
             "<Button-1>", lambda _event: self._refresh_target_directories(prefer_current=True)
         )
+        self.target_directory_menu.bind(
+            "<<ComboboxSelected>>", self._on_target_directory_selected
+        )
 
+        output_options = ttk.Frame(output_group, style="Panel.TFrame")
+        output_options.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        for column_index in range(2):
+            output_options.columnconfigure(column_index, weight=1, uniform="output_options")
+        self.clear_before_write_check = ttk.Checkbutton(
+            output_options,
+            text="Clear Drive",
+            variable=self.clear_before_write_var,
+        )
+        self.clear_before_write_check.grid(row=0, column=0, sticky="w")
+        self.eject_after_write_check = ttk.Checkbutton(
+            output_options,
+            text="Eject",
+            variable=self.eject_after_write_var,
+        )
+        self.eject_after_write_check.grid(row=0, column=1, sticky="w")
+
+        output_buttons = ttk.Frame(output_group, style="Panel.TFrame")
+        output_buttons.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        for column_index in range(2):
+            output_buttons.columnconfigure(column_index, weight=1, uniform="output_buttons")
         ttk.Button(
-            output_group,
+            output_buttons,
             text="Save Settings",
-            width=13,
+            width=1,
             command=self._save_current_settings,
-        ).grid(row=2, column=0, sticky="w", padx=(0, 4), pady=(0, 6))
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 3))
         ttk.Button(
-            output_group,
-            text="Generate",
-            width=13,
+            output_buttons,
+            text="Write G-code",
+            width=1,
             command=self._generate,
-        ).grid(row=2, column=1, sticky="w", padx=(4, 0), pady=(0, 6))
+        ).grid(row=0, column=1, sticky="ew", padx=(3, 0))
 
         ttk.Label(
             output_group,
@@ -414,14 +475,14 @@ class PlotterApp(tk.Tk):
             style="Muted.TLabel",
             wraplength=220,
         ).grid(
-            row=3, column=0, columnspan=2, sticky="sw"
+            row=4, column=0, columnspan=2, sticky="ew"
         )
         ttk.Label(
             output_group,
             text="Length unit: mm, Speed unit: mm/s",
             style="Muted.TLabel",
-        ).grid(row=4, column=0, columnspan=2, sticky="e")
-        output_group.rowconfigure(3, weight=1)
+        ).grid(row=5, column=0, columnspan=2, sticky="e")
+        output_group.rowconfigure(4, weight=1)
         panel.rowconfigure(row - 1, weight=1)
 
     def _field_var(self, value: float) -> tk.StringVar:
@@ -546,23 +607,22 @@ class PlotterApp(tk.Tk):
         self.boundary_z_var.set(_format_number(self.printer.boundary_z))
 
     def _refresh_file_list(self) -> None:
-        RAW_DIR.mkdir(exist_ok=True)
-        DOWNLOADS_DIR.mkdir(exist_ok=True)
-        self.dxf_files = sorted(
-            path for path in RAW_DIR.iterdir() if path.suffix.lower() == ".dxf"
-        )
+        paths: list[Path] = []
+        for value in [self.settings.active_file, *self.settings.recent_files]:
+            path = _resolve_project_path(value)
+            if path and path.suffix.lower() == ".dxf":
+                paths.append(path)
 
-        menu = self.file_menu["menu"]
-        menu.delete(0, "end")
-        if not self.dxf_files:
+        self.dxf_files = _dedupe_paths(paths)[:MAX_RECENT_FILES]
+        self.file_label_to_path = {
+            _file_display_text(path): path for path in self.dxf_files
+        }
+        labels = list(self.file_label_to_path)
+        self.file_menu.configure(values=labels)
+        if self.current_file:
+            self.file_var.set(_file_display_text(self.current_file))
+        elif not labels:
             self.file_var.set("")
-            return
-
-        for path in self.dxf_files:
-            menu.add_command(
-                label=path.name,
-                command=lambda selected=path.name: self._on_file_selected(selected),
-            )
 
     def _refresh_target_directories(self, prefer_current: bool = False) -> None:
         current_value = self._selected_target_directory_value()
@@ -578,6 +638,7 @@ class PlotterApp(tk.Tk):
         if selected_label is None and labels:
             selected_label = labels[0]
         self.target_directory_var.set(selected_label or "")
+        self._update_eject_after_write_state()
 
     def _target_label_for_value(self, value: str | None) -> str | None:
         wanted_path = _normalized_path_text(target_directory_path(value))
@@ -591,22 +652,45 @@ class PlotterApp(tk.Tk):
     def _selected_target_directory_value(self) -> str:
         if not hasattr(self, "target_directory_var"):
             return self.settings.target_directory
-        choice = self.target_directory_choices.get(self.target_directory_var.get())
+        choice = self._selected_target_directory_choice()
         if choice is None:
             return TARGET_DOWNLOADS
         return choice.settings_value
+
+    def _selected_target_directory_choice(self) -> TargetDirectoryChoice | None:
+        if not hasattr(self, "target_directory_var"):
+            return None
+        return self.target_directory_choices.get(self.target_directory_var.get())
+
+    def _on_target_directory_selected(self, _event=None) -> None:
+        self._update_eject_after_write_state()
+
+    def _update_eject_after_write_state(self) -> None:
+        if not hasattr(self, "eject_after_write_check"):
+            return
+
+        choice = self._selected_target_directory_choice()
+        if choice and choice.is_removable:
+            self.eject_after_write_check.configure(state="normal")
+            self.clear_before_write_check.configure(state="normal")
+        else:
+            self.eject_after_write_check.configure(state="disabled")
+            self.clear_before_write_check.configure(state="disabled")
 
     def _sync_output_filename_for_file(
         self,
         previous_file: Path | None = None,
         prefer_saved: bool = False,
+        force_default: bool = False,
     ) -> None:
         if not self.current_file or not hasattr(self, "output_filename_var"):
             return
 
         current_value = self.output_filename_var.get().strip()
         previous_default = default_output_filename(previous_file) if previous_file else ""
-        if prefer_saved and self.settings.output_filename:
+        if force_default:
+            self.output_filename_var.set(default_output_filename(self.current_file))
+        elif prefer_saved and self.settings.output_filename:
             self.output_filename_var.set(
                 normalize_output_filename(self.current_file, self.settings.output_filename)
             )
@@ -624,36 +708,49 @@ class PlotterApp(tk.Tk):
         return filename
 
     def _select_initial_file(self) -> None:
-        if not self.dxf_files:
-            return
-
         active = _resolve_project_path(self.settings.active_file)
         if active and active.exists() and active.suffix.lower() == ".dxf":
             self.current_file = active
         else:
-            self.current_file = self.dxf_files[0]
-        self.file_var.set(self.current_file.name)
+            self.current_file = next((path for path in self.dxf_files if path.exists()), None)
+        if not self.current_file:
+            return
+        self.file_var.set(_file_display_text(self.current_file))
         self._sync_output_filename_for_file(prefer_saved=True)
 
-    def _on_file_selected(self, name: str) -> None:
-        selected = next((path for path in self.dxf_files if path.name == name), None)
+    def _on_file_selected(self, _event=None) -> None:
+        label = self.file_var.get()
+        selected = self.file_label_to_path.get(label)
         if selected is None:
             return
+        if not selected.exists():
+            messagebox.showerror("DXF missing", f"Could not find:\n{selected}")
+            self.status_var.set("Selected DXF file is missing.")
+            return
         previous_file = self.current_file
-        self.current_file = selected
-        self.file_var.set(name)
-        self._sync_output_filename_for_file(previous_file=previous_file)
+        self.current_file = selected.resolve()
+        self.file_var.set(_file_display_text(self.current_file))
+        self._sync_output_filename_for_file(
+            previous_file=previous_file,
+            force_default=True,
+        )
         self._load_current_file()
 
     def _load_current_file(self) -> None:
         self._refresh_file_list()
-        if self.current_file is None and self.dxf_files:
-            self.current_file = self.dxf_files[0]
-            self.file_var.set(self.current_file.name)
+        if self.current_file is None:
+            self.current_file = next((path for path in self.dxf_files if path.exists()), None)
+        if self.current_file is not None:
+            self.file_var.set(_file_display_text(self.current_file))
             self._sync_output_filename_for_file()
 
         if self.current_file is None:
-            self.status_var.set("No DXF files found in raw/.")
+            self.status_var.set("No DXF loaded. Drop a DXF file into the UI.")
+            return
+
+        if not self.current_file.exists():
+            self.status_var.set("Current DXF file is missing.")
+            messagebox.showerror("DXF missing", f"Could not find:\n{self.current_file}")
             return
 
         try:
@@ -676,9 +773,10 @@ class PlotterApp(tk.Tk):
         else:
             self.crop = self.drawing.bounds.normalized()
 
-        self._fit_view_to_drawing()
+        self._fit_view_to_buildplate()
         self._redraw_canvas()
         self._update_dimension_readout()
+        self._remember_current_file(save=True)
         skipped = sum(self.drawing.skipped_counts.values())
         self.entity_var.set(
             f"{self.drawing.stroke_count} strokes, "
@@ -687,6 +785,81 @@ class PlotterApp(tk.Tk):
             + (f"; skipped {skipped} non-plot entities" if skipped else "")
         )
         self.status_var.set(f"Loaded {self.current_file.name}.")
+
+    def _setup_drag_and_drop(self) -> None:
+        if DND_FILES is None:
+            self.status_var.set(
+                "Install tkinterdnd2 to enable DXF drag and drop."
+            )
+            return
+
+        for widget in (self, self.canvas, getattr(self, "panel", None)):
+            if widget is None:
+                continue
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", self._on_file_drop)
+
+    def _on_file_drop(self, event) -> str:
+        paths = self._drop_event_paths(event)
+        dxf_path = next(
+            (path for path in paths if path.suffix.lower() == ".dxf"),
+            None,
+        )
+        if dxf_path is None:
+            messagebox.showwarning("No DXF dropped", "Drop a .dxf file to load it.")
+            return "break"
+        if not dxf_path.exists():
+            messagebox.showerror("DXF missing", f"Could not find:\n{dxf_path}")
+            return "break"
+
+        previous_file = self.current_file
+        self.current_file = dxf_path.resolve()
+        self._sync_output_filename_for_file(
+            previous_file=previous_file,
+            force_default=True,
+        )
+        self._load_current_file()
+        return "break"
+
+    def _drop_event_paths(self, event) -> list[Path]:
+        data = getattr(event, "data", "")
+        try:
+            values = self.tk.splitlist(data)
+        except tk.TclError:
+            values = (data,)
+
+        paths: list[Path] = []
+        for value in values:
+            text = str(value).strip()
+            if text.startswith("file:///"):
+                text = text[8:]
+            if text:
+                paths.append(Path(text).expanduser())
+        return paths
+
+    def _remember_current_file(self, save: bool = False) -> None:
+        if not self.current_file:
+            return
+
+        file_text = _settings_file_text(self.current_file)
+        self.settings.active_file = file_text
+        self.settings.recent_files = _recent_file_texts_with(
+            file_text,
+            self.settings.recent_files,
+        )
+        self._refresh_file_list()
+        self.file_var.set(_file_display_text(self.current_file))
+
+        if not save:
+            return
+        try:
+            settings = self._settings_from_ui()
+            settings.active_file = file_text
+            settings.recent_files = self.settings.recent_files
+            save_settings(settings, DEFAULT_SETTINGS_PATH)
+            self.settings = settings
+        except Exception as exc:
+            self.status_var.set(f"Loaded DXF, but could not save file history: {exc}")
 
     def _rotate_drawing_ccw(self) -> None:
         if not self.drawing:
@@ -697,7 +870,7 @@ class PlotterApp(tk.Tk):
         if self.crop:
             self.crop = rotate_crop_box_ccw(self.crop, pivot)
         self.rotation_quarters = (self.rotation_quarters + 1) % 4
-        self._fit_view_to_drawing()
+        self._fit_view_to_buildplate()
         self._redraw_canvas()
         self._update_dimension_readout()
         if self.current_file:
@@ -705,12 +878,13 @@ class PlotterApp(tk.Tk):
                 f"Rotated {self.current_file.name} CCW 90 deg. Origin unchanged."
             )
 
-    def _fit_view_to_drawing(self) -> None:
-        if not self.drawing:
+    def _fit_view_to_buildplate(self) -> None:
+        plate = self._buildplate_source_box()
+        if plate is None:
             self.view_bounds = CropBox(0, 0, 100, 100)
             return
 
-        bounds = self.drawing.bounds.normalized()
+        bounds = plate.normalized()
         pad_x = max(bounds.width * 0.04, 1.0)
         pad_y = max(bounds.height * 0.04, 1.0)
         self.view_bounds = CropBox(
@@ -719,6 +893,12 @@ class PlotterApp(tk.Tk):
             bounds.xmax + pad_x,
             bounds.ymax + pad_y,
         )
+
+    def _fit_screen(self) -> None:
+        self._fit_view_to_buildplate()
+        self._redraw_canvas()
+        self._update_dimension_readout()
+        self.status_var.set("Fit buildplate to screen.")
 
     def _reset_crop(self) -> None:
         if not self.drawing:
@@ -1057,6 +1237,7 @@ class PlotterApp(tk.Tk):
         if not self.crop:
             return
 
+        settings = self._settings_from_ui(update_crop=False)
         box = self.crop.normalized()
         left, top, right, bottom = self._box_canvas_rect(box)
 
@@ -1081,14 +1262,19 @@ class PlotterApp(tk.Tk):
         self.canvas.tag_lower(fill)
         self._crop_item_ids.extend([fill, rect])
 
-        scale = self._current_scale()
-        width_label = self._dimension_label(box.width * scale)
-        height_label = self._dimension_label(box.height * scale)
-        label_y = max(top - 13, 12)
-        label_x = min(right + 14, self.canvas.winfo_width() - 12)
+        self._draw_bounding_box_preview(settings)
+
+        scale = max(settings.scale, 0.0001)
+        plot_bounds = plot_bounds_including_preflight(self.crop, settings).normalized()
+        dimension_box = self._plot_box_to_source_box(plot_bounds, settings).normalized()
+        d_left, d_top, d_right, d_bottom = self._box_canvas_rect(dimension_box)
+        width_label = self._dimension_label(plot_bounds.width)
+        height_label = self._dimension_label(plot_bounds.height)
+        label_y = max(d_top - 13, 12)
+        label_x = min(d_right + 14, self.canvas.winfo_width() - 12)
         self._crop_item_ids.append(
             self.canvas.create_text(
-                (left + right) / 2,
+                (d_left + d_right) / 2,
                 label_y,
                 text=width_label,
                 fill="#9a3412",
@@ -1098,7 +1284,7 @@ class PlotterApp(tk.Tk):
         self._crop_item_ids.append(
             self.canvas.create_text(
                 label_x,
-                (top + bottom) / 2,
+                (d_top + d_bottom) / 2,
                 text=height_label,
                 fill="#9a3412",
                 angle=90,
@@ -1106,7 +1292,7 @@ class PlotterApp(tk.Tk):
             )
         )
 
-        self._draw_crop_printable_offsets(box, scale)
+        self._draw_crop_printable_offsets(dimension_box, scale)
 
         for name, x, y in self._handle_positions_canvas(box):
             size = 4 if len(name) == 1 else 5
@@ -1119,6 +1305,50 @@ class PlotterApp(tk.Tk):
                     fill="#ffffff",
                     outline="#d9480f",
                     width=2,
+                )
+            )
+
+    def _draw_bounding_box_preview(self, settings: PlotterSettings) -> None:
+        if not self.crop:
+            return
+
+        vertex_box = self.crop.normalized()
+        vertex_color = "#fca5a5"
+        for x, y in (
+            (vertex_box.xmin, vertex_box.ymin),
+            (vertex_box.xmax, vertex_box.ymin),
+            (vertex_box.xmax, vertex_box.ymax),
+            (vertex_box.xmin, vertex_box.ymax),
+        ):
+            cx, cy = self._source_to_canvas((x, y))
+            self._crop_item_ids.extend(
+                [
+                    self.canvas.create_line(
+                        cx - 4, cy, cx + 4, cy, fill=vertex_color, width=1
+                    ),
+                    self.canvas.create_line(
+                        cx, cy - 4, cx, cy + 4, fill=vertex_color, width=1
+                    ),
+                ]
+            )
+
+        for plot_stroke in bounding_box_dotted_strokes(self.crop, settings):
+            coords: list[float] = []
+            for point in plot_stroke:
+                coords.extend(
+                    self._source_to_canvas(
+                        self._plot_point_to_source_point(point, settings)
+                    )
+                )
+            if len(coords) < 4:
+                continue
+            self._crop_item_ids.append(
+                self.canvas.create_line(
+                    *coords,
+                    fill="#f87171",
+                    width=1,
+                    capstyle=tk.ROUND,
+                    joinstyle=tk.ROUND,
                 )
             )
 
@@ -1442,6 +1672,31 @@ class PlotterApp(tk.Tk):
             ymax=settings.origin_y + ymax / scale,
         ).normalized()
 
+    def _plot_box_to_source_box(
+        self,
+        box: CropBox,
+        settings: PlotterSettings,
+    ) -> CropBox:
+        scale = max(settings.scale, 0.0001)
+        box = box.normalized()
+        return CropBox(
+            xmin=settings.origin_x + (box.xmin - settings.home_x) / scale,
+            ymin=settings.origin_y + (box.ymin - settings.home_y) / scale,
+            xmax=settings.origin_x + (box.xmax - settings.home_x) / scale,
+            ymax=settings.origin_y + (box.ymax - settings.home_y) / scale,
+        ).normalized()
+
+    def _plot_point_to_source_point(
+        self,
+        point: tuple[float, float],
+        settings: PlotterSettings,
+    ) -> tuple[float, float]:
+        scale = max(settings.scale, 0.0001)
+        return (
+            settings.origin_x + (point[0] - settings.home_x) / scale,
+            settings.origin_y + (point[1] - settings.home_y) / scale,
+        )
+
     def _origin_source_point(
         self, settings: PlotterSettings | None = None
     ) -> tuple[float, float]:
@@ -1468,11 +1723,10 @@ class PlotterApp(tk.Tk):
     def _update_dimension_readout(self) -> None:
         if not self.crop:
             return
-        scale = self._current_scale()
         settings = self._settings_from_ui(update_crop=False)
         plot_bounds = plot_bounds_including_preflight(self.crop, settings)
         self.plot_size_var.set(
-            f"Plot: {self.crop.width * scale:.2f} x {self.crop.height * scale:.2f} mm"
+            f"Plot: {plot_bounds.width:.2f} x {plot_bounds.height:.2f} mm"
         )
         self.plot_bounds_var.set(
             "Bounds: "
@@ -1496,7 +1750,11 @@ class PlotterApp(tk.Tk):
 
     def _settings_from_ui(self, update_crop: bool = True) -> PlotterSettings:
         settings = PlotterSettings(
-            active_file=_project_relative(self.current_file) if self.current_file else None,
+            active_file=_settings_file_text(self.current_file) if self.current_file else None,
+            recent_files=_recent_file_texts_with(
+                _settings_file_text(self.current_file) if self.current_file else None,
+                self.settings.recent_files,
+            ),
             device_id=self.printer.key,
             home_x=self._float_from_var(self.home_x_var, self.settings.home_x),
             home_y=self._float_from_var(self.home_y_var, self.settings.home_y),
@@ -1536,6 +1794,8 @@ class PlotterApp(tk.Tk):
             ),
             curve_tolerance=self.settings.curve_tolerance,
             target_directory=self._selected_target_directory_value(),
+            clear_before_write=bool(self.clear_before_write_var.get()),
+            eject_after_write=bool(self.eject_after_write_var.get()),
             output_filename=self._selected_output_filename(),
             crop=self.crop.normalized() if update_crop and self.crop else self.crop,
         )
@@ -1603,12 +1863,36 @@ class PlotterApp(tk.Tk):
 
         self._refresh_target_directories(prefer_current=True)
         settings.target_directory = self._selected_target_directory_value()
+        target_choice = self._selected_target_directory_choice()
+        settings.clear_before_write = (
+            bool(self.clear_before_write_var.get())
+            and target_choice is not None
+            and target_choice.is_removable
+        )
+        settings.eject_after_write = (
+            bool(self.eject_after_write_var.get())
+            and target_choice is not None
+            and target_choice.is_removable
+        )
         settings.output_filename = self._selected_output_filename()
         output_path = default_gcode_path(
             self.current_file,
             settings.target_directory,
             settings.output_filename,
         )
+        cleared_count = 0
+        if settings.clear_before_write and target_choice is not None:
+            try:
+                cleared_count = len(clear_gcode_files_from_target(target_choice))
+            except Exception as exc:
+                messagebox.showerror(
+                    "Clear failed",
+                    f"G-code was not written because existing .gcode files "
+                    f"could not be cleared from:\n{target_choice.path}\n\n{exc}",
+                )
+                self.status_var.set("Clear before writing failed.")
+                return
+
         try:
             summary = generate_gcode(
                 source_path=self.current_file,
@@ -1624,19 +1908,45 @@ class PlotterApp(tk.Tk):
             return
 
         warning_text = boundary_check.message if boundary_check.warning else ""
+        eject_text = ""
+        if settings.eject_after_write and target_choice is not None:
+            try:
+                eject_target_directory(target_choice)
+                eject_text = f" Ejected {target_choice.label}."
+                self._refresh_target_directories(prefer_current=False)
+            except Exception as exc:
+                eject_text = " Eject failed."
+                messagebox.showwarning(
+                    "Eject failed",
+                    f"Wrote the G-code, but Windows could not eject:\n"
+                    f"{target_choice.path}\n\n{exc}",
+                )
         self.status_var.set(
             f"Wrote {summary.output_path} "
             f"({summary.stroke_count} strokes, {summary.segment_count} segments)."
+            + (
+                f" Cleared {cleared_count} old G-code file"
+                f"{'' if cleared_count == 1 else 's'}."
+                if settings.clear_before_write
+                else ""
+            )
             + (f" Warning: {warning_text}" if warning_text else "")
+            + eject_text
         )
         messagebox.showinfo(
             "G-code generated",
             f"Wrote {summary.output_path}\n\n"
             f"Plot size: {summary.plot_bounds.width:.2f} x {summary.plot_bounds.height:.2f} mm\n"
             f"Draw length: {summary.draw_length_mm:.1f} mm"
-            + (f"\n\nWarning: {warning_text}" if warning_text else ""),
+            + (
+                f"\n\nCleared {cleared_count} old G-code file"
+                f"{'' if cleared_count == 1 else 's'}."
+                if settings.clear_before_write
+                else ""
+            )
+            + (f"\n\nWarning: {warning_text}" if warning_text else "")
+            + ("\n\nEjected target drive." if eject_text.startswith(" Ejected") else ""),
         )
-
 
 def _resolve_project_path(value: str | None) -> Path | None:
     if not value:
@@ -1653,7 +1963,53 @@ def _project_relative(path: Path | None) -> str | None:
     try:
         return path.resolve().relative_to(PROJECT_ROOT).as_posix()
     except ValueError:
-        return str(path)
+        return str(path.resolve())
+
+
+def _settings_file_text(path: Path | None) -> str | None:
+    return _project_relative(path)
+
+
+def _file_display_text(path: Path) -> str:
+    return _settings_file_text(path) or str(path)
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = _normalized_path_text(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
+
+
+def _recent_file_texts_with(
+    first_file: str | None,
+    recent_files: list[str],
+) -> list[str]:
+    values = [first_file, *recent_files] if first_file else list(recent_files)
+    recent: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        path = _resolve_project_path(value)
+        if path is None or path.suffix.lower() != ".dxf":
+            continue
+        text = _settings_file_text(path)
+        if not text:
+            continue
+        key = _normalized_path_text(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        recent.append(text)
+        if len(recent) >= MAX_RECENT_FILES:
+            break
+    return recent
 
 
 def _normalized_path_text(path: Path) -> str:

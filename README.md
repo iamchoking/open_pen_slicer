@@ -9,8 +9,8 @@ The generated G-code:
 - uses millimeters and absolute positioning
 - homes the printer
 - lifts to `home_z + z_safe_height` before plotting and before the final top-left move
-- traces the selected crop box before the drawing as 5 mm dotted lines with
-  lifted 5 mm gaps, using configurable repeat, outward offset, and speed settings
+- marks the selected crop box vertices, then traces padded 5 mm dotted bounding
+  boxes with lifted 5 mm gaps using configurable Num, Pad, and Spd settings
 - lifts/drops Z for pen up/down strokes
 - never emits extrusion moves
 - never heats the hotend or bed
@@ -29,13 +29,14 @@ The environment and dependencies have already been created on this machine.
 
 ## UI Workflow
 
-1. Put a `.dxf` file in `raw/`.
-2. Start the UI:
+1. Start the UI:
 
 ```powershell
 conda run -n raisim python scripts/run_ui.py
 ```
 
+2. Drop a `.dxf` file into the UI, or choose one of the last 10 remembered
+   file paths from **File**.
 3. In **Settings**, press **Crop**, then drag or resize the orange crop box in the preview.
 4. Press **Set Origin**, then drag the green Ender 3 Pro buildplate outline to place its blue lower-left home marker in the DXF, or press **Center** to center the crop inside the dotted printable area.
 5. Choose the Device. Use **Edit** to open its YAML in Notepad and **Reload**
@@ -55,15 +56,20 @@ When neither **Crop** nor **Set Origin** is active, dragging pans the preview an
 
 The **Target Directory** dropdown includes `Downloads` and plugged-in removable
 USB/SD drives. **Generate** writes the editable **Filename** to that target.
+When a removable target is selected, **Clear Drive** removes existing `*.gcode`
+files from that drive before the new file is written, and **Eject** safely
+ejects it after a successful write.
 **Save Settings** writes the current UI values to
 `config/settings.yaml` without generating G-code.
+Dropped or selected DXF files are saved immediately as `active_file` plus the
+last 10 `recent_files` in `config/settings.yaml`.
 
 ## CLI Workflow
 
-Generate using the current `config/settings.yaml`:
+Generate using the current `config/settings.yaml` active/recent DXF:
 
 ```powershell
-conda run -n raisim python scripts/generate_cli.py --input raw/mech_linkage_bar.DXF
+conda run -n raisim python scripts/generate_cli.py
 ```
 
 Persist CLI values back to `config/settings.yaml`; device values such as Home,
@@ -85,14 +91,14 @@ X/Y, the inner dotted safe right edge is shown at
 `boundary.x - safety_margin - home_x` relative to that lower-left point, and Y
 follows the same pattern.
 
-If the scaled crop, preflight crop-box outlines, or Z heights exceed the
+If the outermost preflight bounding box or Z heights exceed the
 absolute boundary, G-code generation is refused. If they stay inside the
 absolute boundary but enter the safety margin, the UI/CLI shows a warning and
 still writes the G-code. Home Z is treated as pen down height; pen up height is
 `home_z + z_hop`, and safe travel height is `home_z + z_safe_height`.
 
-Set bounding box repeat to `0` to plot only the four crop-box vertices instead
-of the dotted outline.
+Set bounding box Num to `0` to plot only the four crop-box vertices. With
+Num above `0`, the first dotted box is Pad millimeters outside those vertices.
 
 ## Text Fonts
 

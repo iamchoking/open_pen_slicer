@@ -3,3 +3,6 @@ ezdxf>=1.4.4
 
 # settings.yaml / printer.yaml support
 PyYAML>=6.0.3
+
+# native Tk drag-and-drop support
+tkinterdnd2>=0.6.2

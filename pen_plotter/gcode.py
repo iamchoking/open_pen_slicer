@@ -42,8 +42,8 @@ def generate_gcode(
     travel_rate = _gcode_rate_from_speed(settings.travel_speed)
     draw_rate = _gcode_rate_from_speed(settings.draw_speed)
     travel_count = 0
-    crop_outline_box = _crop_outline_box(crop, settings)
-    crop_outline_boxes = _crop_outline_boxes(crop, settings)
+    crop_outline_box = bounding_box_vertex_box(crop, settings)
+    crop_outline_boxes = bounding_box_outline_boxes(crop, settings)
     crop_outline_rate = _gcode_rate_from_speed(settings.bounding_box_speed)
     printer = load_printer_profile(settings.device_id)
 
@@ -65,7 +65,7 @@ def generate_gcode(
         ]
     )
 
-    if settings.bounding_box_repeat == 0 and crop_outline_box:
+    if crop_outline_box:
         travel_count += _append_box_vertices(
             lines=lines,
             box=crop_outline_box,
@@ -77,19 +77,18 @@ def generate_gcode(
             z_move_rate=z_move_rate,
         )
     for pass_index, crop_outline_box in enumerate(crop_outline_boxes, start=1):
-        offset = (pass_index - 1) * settings.bounding_box_offset
-        first_travel_z = safe_z if pass_index == 1 else pen_up_z
+        offset = pass_index * settings.bounding_box_offset
         travel_count += _append_dotted_box(
             lines=lines,
             box=crop_outline_box,
             label=(
-                "Selected dotted crop box outline "
+                "Selected dotted padded crop box outline "
                 f"{pass_index}/{settings.bounding_box_repeat} "
                 f"(+{_fmt(offset)} mm)"
             ),
             pen_down_z=pen_down_z,
             pen_up_z=pen_up_z,
-            first_travel_z=first_travel_z,
+            first_travel_z=pen_up_z,
             travel_rate=travel_rate,
             draw_rate=crop_outline_rate,
             z_move_rate=z_move_rate,
@@ -208,13 +207,34 @@ def _append_box_vertices(
 def plot_bounds_including_preflight(crop: CropBox, settings: PlotterSettings) -> CropBox:
     settings.validate()
     bounds = plot_bounds_for_crop(crop, settings).normalized()
-    margin = max(0.0, (settings.bounding_box_repeat - 1) * settings.bounding_box_offset)
+    margin = max(0.0, settings.bounding_box_repeat * settings.bounding_box_offset)
     return CropBox(
         xmin=bounds.xmin - margin,
         ymin=bounds.ymin - margin,
         xmax=bounds.xmax + margin,
         ymax=bounds.ymax + margin,
     )
+
+
+def bounding_box_vertex_box(crop: CropBox, settings: PlotterSettings) -> CropBox | None:
+    return _crop_outline_box(crop, settings)
+
+
+def bounding_box_outline_boxes(crop: CropBox, settings: PlotterSettings) -> list[CropBox]:
+    box = _crop_outline_box(crop, settings)
+    if box is None or settings.bounding_box_repeat <= 0:
+        return []
+    return [
+        _expand_box(box, index * settings.bounding_box_offset)
+        for index in range(1, settings.bounding_box_repeat + 1)
+    ]
+
+
+def bounding_box_dotted_strokes(crop: CropBox, settings: PlotterSettings) -> list[Stroke]:
+    strokes: list[Stroke] = []
+    for box in bounding_box_outline_boxes(crop, settings):
+        strokes.extend(_dotted_outline_strokes(box))
+    return strokes
 
 
 def _crop_outline_box(crop: CropBox, settings: PlotterSettings) -> CropBox | None:
@@ -226,13 +246,7 @@ def _crop_outline_box(crop: CropBox, settings: PlotterSettings) -> CropBox | Non
 
 
 def _crop_outline_boxes(crop: CropBox, settings: PlotterSettings) -> list[CropBox]:
-    box = _crop_outline_box(crop, settings)
-    if box is None or settings.bounding_box_repeat <= 0:
-        return []
-    return [
-        _expand_box(box, index * settings.bounding_box_offset)
-        for index in range(settings.bounding_box_repeat)
-    ]
+    return bounding_box_outline_boxes(crop, settings)
 
 
 def _expand_box(box: CropBox, offset: float) -> CropBox:

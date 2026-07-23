@@ -12,6 +12,9 @@ CONFIG_DIR = PROJECT_ROOT / "config"
 DEFAULT_SETTINGS_PATH = CONFIG_DIR / "settings.yaml"
 DOWNLOADS_DIR = Path.home() / "Downloads"
 TARGET_DOWNLOADS = "Downloads"
+MAX_RECENT_FILES = 10
+OUTPUT_FILENAME_PREFIX = "[ops]"
+LEGACY_OUTPUT_FILENAME_PREFIX = "[pen_plotter]"
 
 
 def target_directory_path(target_directory: str | None = None) -> Path:
@@ -25,7 +28,7 @@ def target_directory_path(target_directory: str | None = None) -> Path:
 
 
 def default_output_filename(source_path: Path) -> str:
-    return f"[pen_plotter] {source_path.stem}.gcode"
+    return f"{OUTPUT_FILENAME_PREFIX} {source_path.stem}.gcode"
 
 
 def normalize_output_filename(source_path: Path, filename: str | None = None) -> str:
@@ -33,6 +36,9 @@ def normalize_output_filename(source_path: Path, filename: str | None = None) ->
     if not cleaned:
         return default_output_filename(source_path)
     cleaned = Path(cleaned).name
+    legacy_prefix = f"{LEGACY_OUTPUT_FILENAME_PREFIX} "
+    if cleaned.startswith(legacy_prefix):
+        cleaned = f"{OUTPUT_FILENAME_PREFIX} {cleaned[len(legacy_prefix):]}"
     if Path(cleaned).suffix.lower() != ".gcode":
         cleaned += ".gcode"
     return cleaned
@@ -92,6 +98,7 @@ class CropBox:
 @dataclass
 class PlotterSettings:
     active_file: str | None = None
+    recent_files: list[str] = field(default_factory=list)
     device_id: str = "CE3PRO"
     home_x: float = 0.0
     home_y: float = 0.0
@@ -109,6 +116,8 @@ class PlotterSettings:
     travel_speed: float = 83.333333
     curve_tolerance: float = 0.35
     target_directory: str = TARGET_DOWNLOADS
+    clear_before_write: bool = False
+    eject_after_write: bool = False
     output_filename: str | None = None
     crop: CropBox | None = field(default=None)
 
@@ -120,6 +129,7 @@ class PlotterSettings:
 
         for name in (
             "active_file",
+            "recent_files",
             "device_id",
             "home_x",
             "home_y",
@@ -137,6 +147,8 @@ class PlotterSettings:
             "travel_speed",
             "curve_tolerance",
             "target_directory",
+            "clear_before_write",
+            "eject_after_write",
             "output_filename",
         ):
             if name not in data:
@@ -144,10 +156,19 @@ class PlotterSettings:
             value = data[name]
             if name == "active_file":
                 settings.active_file = str(value) if value else None
+            elif name == "recent_files":
+                if isinstance(value, list):
+                    settings.recent_files = [
+                        str(item) for item in value if str(item).strip()
+                    ]
             elif name == "device_id":
                 settings.device_id = str(value) if value else "CE3PRO"
             elif name == "target_directory":
                 settings.target_directory = str(value) if value else TARGET_DOWNLOADS
+            elif name == "clear_before_write":
+                settings.clear_before_write = _bool_from_value(value)
+            elif name == "eject_after_write":
+                settings.eject_after_write = _bool_from_value(value)
             elif name == "output_filename":
                 settings.output_filename = str(value) if value else None
             elif name in {"rotation_quarters", "bounding_box_repeat"}:
@@ -162,6 +183,8 @@ class PlotterSettings:
                     pass
 
         settings.crop = CropBox.from_mapping(data.get("crop"))
+        if settings.active_file:
+            settings.recent_files = [settings.active_file, *settings.recent_files]
 
         # Migrate the older offset model:
         # output = x_offset + (source - crop.xmin) * scale
@@ -205,6 +228,9 @@ class PlotterSettings:
         self.curve_tolerance = max(self.curve_tolerance, 0.01)
         if self.output_filename is not None:
             self.output_filename = self.output_filename.strip() or None
+        self.clear_before_write = bool(self.clear_before_write)
+        self.eject_after_write = bool(self.eject_after_write)
+        self.recent_files = _clean_recent_files(self.recent_files)
         if self.crop:
             self.crop = self.crop.normalized()
 
@@ -224,6 +250,42 @@ class PlotterSettings:
         if self.crop is None:
             data["crop"] = None
         return data
+
+
+def _clean_recent_files(recent_files: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in recent_files:
+        text = str(value).strip()
+        if not text:
+            continue
+        key = _settings_path_key(text)
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(text)
+        if len(cleaned) >= MAX_RECENT_FILES:
+            break
+    return cleaned
+
+
+def _settings_path_key(value: str) -> str:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    try:
+        return str(path.resolve()).casefold()
+    except OSError:
+        return str(path.absolute()).casefold()
+
+
+def _bool_from_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().casefold()
+    return text in {"1", "true", "yes", "on"}
 
 
 def load_settings(path: Path = DEFAULT_SETTINGS_PATH) -> PlotterSettings:

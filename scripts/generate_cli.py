@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
         "-i",
         type=Path,
         default=None,
-        help="DXF path. Defaults to active_file from config/settings.yaml or the first raw/*.dxf.",
+        help="DXF path. Defaults to active_file or recent_files from config/settings.yaml.",
     )
     parser.add_argument(
         "--output",
@@ -68,8 +68,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--travel-speed", type=float, default=None, help="Travel speed in mm/s.")
     parser.add_argument("--scale", type=float, default=None)
     parser.add_argument("--rotation-quarters", type=int, default=None)
-    parser.add_argument("--bounding-box-repeat", type=int, default=None)
-    parser.add_argument("--bounding-box-offset", type=float, default=None)
+    parser.add_argument(
+        "--bounding-box-repeat",
+        type=int,
+        default=None,
+        help="Bounding-box number (Num): count of padded dotted boxes.",
+    )
+    parser.add_argument(
+        "--bounding-box-offset",
+        type=float,
+        default=None,
+        help="Bounding-box padding (Pad) in mm between preflight boxes.",
+    )
     parser.add_argument(
         "--bounding-box-speed",
         type=float,
@@ -110,14 +120,18 @@ def main() -> None:
 
     source = args.input
     if source is None and settings.active_file:
-        source = PROJECT_ROOT / settings.active_file
+        source = _resolve_input_path(settings.active_file)
     if source is None:
-        candidates = sorted((PROJECT_ROOT / "raw").glob("*.dxf"))
-        candidates += sorted((PROJECT_ROOT / "raw").glob("*.DXF"))
-        if candidates:
-            source = candidates[0]
+        source = next(
+            (
+                path
+                for path in (_resolve_input_path(value) for value in settings.recent_files)
+                if path.exists() and path.suffix.lower() == ".dxf"
+            ),
+            None,
+        )
     if source is None:
-        raise SystemExit("No DXF file found. Put one in raw/ or pass --input.")
+        raise SystemExit("No DXF file found. Drop one in the UI or pass --input.")
     if not source.is_absolute():
         source = PROJECT_ROOT / source
 
@@ -141,7 +155,11 @@ def main() -> None:
             setattr(settings, attr, value)
     if args.target_directory is not None:
         settings.target_directory = str(args.target_directory)
-    settings.active_file = source.resolve().relative_to(PROJECT_ROOT).as_posix()
+    settings.active_file = _settings_file_text(source)
+    settings.recent_files = _recent_file_texts_with(
+        settings.active_file,
+        settings.recent_files,
+    )
 
     drawing = load_dxf_drawing(
         source,
@@ -210,6 +228,39 @@ def main() -> None:
         f"X {summary.plot_bounds.xmin:.2f}..{summary.plot_bounds.xmax:.2f}, "
         f"Y {summary.plot_bounds.ymin:.2f}..{summary.plot_bounds.ymax:.2f}"
     )
+
+
+def _resolve_input_path(value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path.resolve()
+
+
+def _settings_file_text(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return str(path.resolve())
+
+
+def _recent_file_texts_with(first_file: str, recent_files: list[str]) -> list[str]:
+    values = [first_file, *recent_files]
+    recent: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        path = _resolve_input_path(value)
+        if path.suffix.lower() != ".dxf":
+            continue
+        text = _settings_file_text(path)
+        key = str(path).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        recent.append(text)
+        if len(recent) >= 10:
+            break
+    return recent
 
 
 if __name__ == "__main__":
