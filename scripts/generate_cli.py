@@ -23,17 +23,21 @@ from pen_plotter.settings import (
     load_settings,
     save_settings,
 )
-from pen_plotter.printer import check_gcode_bounds, load_printer_profile
+from pen_plotter.printer import (
+    check_gcode_bounds,
+    load_printer_profiles,
+    save_printer_profile,
+)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate pen-plotter G-code from a DXF.")
+    parser = argparse.ArgumentParser(description="Generate Open Pen Slicer G-code from a DXF.")
     parser.add_argument(
         "--input",
         "-i",
         type=Path,
         default=None,
-        help="DXF path. Defaults to active_file from settings.yaml or the first raw/*.dxf.",
+        help="DXF path. Defaults to active_file from config/settings.yaml or the first raw/*.dxf.",
     )
     parser.add_argument(
         "--output",
@@ -46,7 +50,12 @@ def parse_args() -> argparse.Namespace:
         "--target-directory",
         type=Path,
         default=None,
-        help="Directory for [pen_plotter] <input-stem>.gcode when --output is omitted.",
+        help="Directory for the saved output_filename when --output is omitted.",
+    )
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Printer device ID from config/devices/<device>.yaml, for example CE3PRO.",
     )
     parser.add_argument("--home-x", type=float, default=None)
     parser.add_argument("--home-y", type=float, default=None)
@@ -55,11 +64,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--origin-y", type=float, default=None)
     parser.add_argument("--z-hop", type=float, default=None)
     parser.add_argument("--z-safe-height", type=float, default=None)
+    parser.add_argument("--draw-speed", type=float, default=None, help="Draw speed in mm/s.")
+    parser.add_argument("--travel-speed", type=float, default=None, help="Travel speed in mm/s.")
     parser.add_argument("--scale", type=float, default=None)
     parser.add_argument("--rotation-quarters", type=int, default=None)
     parser.add_argument("--bounding-box-repeat", type=int, default=None)
     parser.add_argument("--bounding-box-offset", type=float, default=None)
-    parser.add_argument("--bounding-box-feed", type=float, default=None)
+    parser.add_argument(
+        "--bounding-box-speed",
+        type=float,
+        default=None,
+        help="Bounding-box draw speed in mm/s.",
+    )
     parser.add_argument(
         "--crop",
         nargs=4,
@@ -70,7 +86,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--save-settings",
         action="store_true",
-        help="Persist CLI values back to settings.yaml.",
+        help="Persist CLI values back to config/settings.yaml.",
     )
     return parser.parse_args()
 
@@ -78,6 +94,19 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     settings = load_settings()
+    if args.device is not None:
+        settings.device_id = str(args.device)
+
+    printer_profiles = load_printer_profiles()
+    printer = printer_profiles.get(settings.device_id) or next(iter(printer_profiles.values()))
+    settings.device_id = printer.key
+    settings.home_x = printer.home_x
+    settings.home_y = printer.home_y
+    settings.home_z = printer.home_z
+    settings.z_hop = printer.z_hop
+    settings.z_safe_height = printer.z_safe_height
+    settings.draw_speed = printer.draw_speed
+    settings.travel_speed = printer.travel_speed
 
     source = args.input
     if source is None and settings.active_file:
@@ -100,11 +129,13 @@ def main() -> None:
         ("origin_y", args.origin_y),
         ("z_hop", args.z_hop),
         ("z_safe_height", args.z_safe_height),
+        ("draw_speed", args.draw_speed),
+        ("travel_speed", args.travel_speed),
         ("scale", args.scale),
         ("rotation_quarters", args.rotation_quarters),
         ("bounding_box_repeat", args.bounding_box_repeat),
         ("bounding_box_offset", args.bounding_box_offset),
-        ("bounding_box_feed", args.bounding_box_feed),
+        ("bounding_box_speed", args.bounding_box_speed),
     ):
         if value is not None:
             setattr(settings, attr, value)
@@ -125,7 +156,6 @@ def main() -> None:
         crop = drawing.bounds.normalized()
     settings.crop = crop
     settings.validate()
-    printer = load_printer_profile()
     plot_bounds = plot_bounds_including_preflight(crop, settings)
     boundary_check = check_gcode_bounds(plot_bounds, settings, printer)
     if boundary_check.blocked:
@@ -135,12 +165,41 @@ def main() -> None:
 
     cropped = clip_strokes_to_crop(drawing.strokes, crop)
     transformed = transform_strokes(cropped, crop, settings)
-    output = args.output or default_gcode_path(source, settings.target_directory)
+    output = args.output or default_gcode_path(
+        source,
+        settings.target_directory,
+        settings.output_filename,
+    )
     if not output.is_absolute():
         output = PROJECT_ROOT / output
 
     summary = generate_gcode(source, transformed, crop, settings, output)
     if args.save_settings:
+        if any(
+            value is not None
+            for value in (
+                args.home_x,
+                args.home_y,
+                args.home_z,
+                args.z_hop,
+                args.z_safe_height,
+                args.draw_speed,
+                args.travel_speed,
+            )
+        ):
+            printer = (
+                printer.with_home(
+                    settings.home_x,
+                    settings.home_y,
+                    settings.home_z,
+                ).with_motion(
+                    settings.z_hop,
+                    settings.z_safe_height,
+                    settings.draw_speed,
+                    settings.travel_speed,
+                )
+            )
+            save_printer_profile(printer)
         save_settings(settings, DEFAULT_SETTINGS_PATH)
 
     print(f"Wrote {summary.output_path}")

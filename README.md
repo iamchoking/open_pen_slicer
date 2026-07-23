@@ -1,4 +1,4 @@
-# Ender 3 Pro Pen Plotter
+# Open Pen Slicer
 
 Small Python DXF-to-G-code tool for a pen mounted on an Ender 3 Pro.
 
@@ -10,7 +10,7 @@ The generated G-code:
 - homes the printer
 - lifts to `home_z + z_safe_height` before plotting and before the final top-left move
 - traces the selected crop box before the drawing as 5 mm dotted lines with
-  lifted 5 mm gaps, using configurable repeat, outward offset, and feed settings
+  lifted 5 mm gaps, using configurable repeat, outward offset, and speed settings
 - lifts/drops Z for pen up/down strokes
 - never emits extrusion moves
 - never heats the hotend or bed
@@ -36,35 +36,38 @@ The environment and dependencies have already been created on this machine.
 conda run -n raisim python scripts/run_ui.py
 ```
 
-3. Press **Crop**, then drag or resize the orange crop box in the preview.
+3. In **Settings**, press **Crop**, then drag or resize the orange crop box in the preview.
 4. Press **Set Origin**, then drag the green Ender 3 Pro buildplate outline to place its blue lower-left home marker in the DXF, or press **Center** to center the crop inside the dotted printable area.
-5. Set scale, rotate the DXF if needed, then set Home X/Y/Z, Z hop, Z safe
-   height, feed rates, and bounding box settings.
-6. Choose **Target Directory**.
-7. Press **Generate**.
+5. Choose the Device. Use **Edit** to open its YAML in Notepad and **Reload**
+   after changing printer properties, then use **Settings** to choose the DXF,
+   set scale, rotate the DXF, and set bounding box settings.
+6. Press **Save Settings** to save the current UI values to `config/settings.yaml`.
+7. Set the output **Filename** and choose **Target Directory**.
+8. Press **Generate**.
 
-**Home (mm)** is the printer G-code coordinate used when a plotted point lands
-on the lower-left of the buildplate visual. **Origin (mm)** is the source DXF
-coordinate where that lower-left buildplate point is placed. **Crop (mm)** shows
-the red crop rectangle as `X / Y / Xlen / Ylen`.
+**Home** is the printer G-code coordinate used when a plotted point lands
+on the lower-left of the buildplate visual. **Origin** is the source DXF
+coordinate where that lower-left buildplate point is placed. **Crop** shows
+the red crop rectangle as `X / Y / width / height`.
 
 When neither **Crop** nor **Set Origin** is active, dragging pans the preview and
 `Ctrl` + mouse wheel zooms around the cursor.
 
 The **Target Directory** dropdown includes `Downloads` and plugged-in removable
-USB/SD drives. The app writes `[pen_plotter] <filename>.gcode` to that target
-and saves the current settings to `settings.yaml`. Those saved values are loaded
-the next time the UI opens.
+USB/SD drives. **Generate** writes the editable **Filename** to that target.
+**Save Settings** writes the current UI values to
+`config/settings.yaml` without generating G-code.
 
 ## CLI Workflow
 
-Generate using the current `settings.yaml`:
+Generate using the current `config/settings.yaml`:
 
 ```powershell
 conda run -n raisim python scripts/generate_cli.py --input raw/mech_linkage_bar.DXF
 ```
 
-Persist CLI values back to `settings.yaml`:
+Persist CLI values back to `config/settings.yaml`; device values such as Home,
+Z Height, and Speed are saved to the matching file in `config/devices/`:
 
 ```powershell
 conda run -n raisim python scripts/generate_cli.py --scale 0.48 --home-x 0 --home-y 0 --origin-x 10 --origin-y 10 --save-settings
@@ -72,11 +75,13 @@ conda run -n raisim python scripts/generate_cli.py --scale 0.48 --home-x 0 --hom
 
 ## Printer Notes
 
-Printer limits are read from `printer.yaml` at the project root. `boundary`
-defines the absolute Ender 3 Pro limits, and `safety_margin` defines the inset
-printable area shown as the inner dotted rectangle in the preview. The green
-outer rectangle is the physical buildplate size. Since its lower-left maps to
-Home X/Y, the inner dotted safe right edge is shown at
+Printer devices are read from every `.yaml` file in `config/devices/`. The file
+stem is the device ID, and `name` is shown in the Device dropdown. Device fields
+are read-only in the UI; use **Edit** to open the selected YAML in Notepad and
+**Reload** to re-read it. Each file defines `home`, `z_height`, `speed`,
+`boundary`, and `safety_margin`. Speed values are in `mm/s`. The green outer
+rectangle is the physical buildplate size. Since its lower-left maps to Home
+X/Y, the inner dotted safe right edge is shown at
 `boundary.x - safety_margin - home_x` relative to that lower-left point, and Y
 follows the same pattern.
 

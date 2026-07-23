@@ -1,2 +1,5 @@
+# DXF parsing, clipping helpers, and SHX stroke font rendering
 ezdxf>=1.4.4
+
+# settings.yaml / printer.yaml support
 PyYAML>=6.0.3

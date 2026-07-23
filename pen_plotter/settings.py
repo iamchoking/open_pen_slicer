@@ -8,7 +8,8 @@ import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SETTINGS_PATH = PROJECT_ROOT / "settings.yaml"
+CONFIG_DIR = PROJECT_ROOT / "config"
+DEFAULT_SETTINGS_PATH = CONFIG_DIR / "settings.yaml"
 DOWNLOADS_DIR = Path.home() / "Downloads"
 TARGET_DOWNLOADS = "Downloads"
 
@@ -23,8 +24,29 @@ def target_directory_path(target_directory: str | None = None) -> Path:
     return path
 
 
-def default_gcode_path(source_path: Path, target_directory: str | None = None) -> Path:
-    return target_directory_path(target_directory) / f"[pen_plotter] {source_path.stem}.gcode"
+def default_output_filename(source_path: Path) -> str:
+    return f"[pen_plotter] {source_path.stem}.gcode"
+
+
+def normalize_output_filename(source_path: Path, filename: str | None = None) -> str:
+    cleaned = (filename or "").strip()
+    if not cleaned:
+        return default_output_filename(source_path)
+    cleaned = Path(cleaned).name
+    if Path(cleaned).suffix.lower() != ".gcode":
+        cleaned += ".gcode"
+    return cleaned
+
+
+def default_gcode_path(
+    source_path: Path,
+    target_directory: str | None = None,
+    output_filename: str | None = None,
+) -> Path:
+    return target_directory_path(target_directory) / normalize_output_filename(
+        source_path,
+        output_filename,
+    )
 
 
 @dataclass
@@ -70,6 +92,7 @@ class CropBox:
 @dataclass
 class PlotterSettings:
     active_file: str | None = None
+    device_id: str = "CE3PRO"
     home_x: float = 0.0
     home_y: float = 0.0
     home_z: float = 0.0
@@ -81,11 +104,12 @@ class PlotterSettings:
     rotation_quarters: int = 0
     bounding_box_repeat: int = 3
     bounding_box_offset: float = 1.0
-    bounding_box_feed: float = 2500.0
-    draw_feed: float = 1200.0
-    travel_feed: float = 5000.0
+    bounding_box_speed: float = 41.666667
+    draw_speed: float = 20.0
+    travel_speed: float = 83.333333
     curve_tolerance: float = 0.35
     target_directory: str = TARGET_DOWNLOADS
+    output_filename: str | None = None
     crop: CropBox | None = field(default=None)
 
     @classmethod
@@ -96,6 +120,7 @@ class PlotterSettings:
 
         for name in (
             "active_file",
+            "device_id",
             "home_x",
             "home_y",
             "home_z",
@@ -107,19 +132,24 @@ class PlotterSettings:
             "rotation_quarters",
             "bounding_box_repeat",
             "bounding_box_offset",
-            "bounding_box_feed",
-            "draw_feed",
-            "travel_feed",
+            "bounding_box_speed",
+            "draw_speed",
+            "travel_speed",
             "curve_tolerance",
             "target_directory",
+            "output_filename",
         ):
             if name not in data:
                 continue
             value = data[name]
             if name == "active_file":
                 settings.active_file = str(value) if value else None
+            elif name == "device_id":
+                settings.device_id = str(value) if value else "CE3PRO"
             elif name == "target_directory":
                 settings.target_directory = str(value) if value else TARGET_DOWNLOADS
+            elif name == "output_filename":
+                settings.output_filename = str(value) if value else None
             elif name in {"rotation_quarters", "bounding_box_repeat"}:
                 try:
                     setattr(settings, name, int(float(value)))
@@ -169,16 +199,28 @@ class PlotterSettings:
         self.rotation_quarters = int(self.rotation_quarters) % 4
         self.bounding_box_repeat = max(int(self.bounding_box_repeat), 0)
         self.bounding_box_offset = max(self.bounding_box_offset, 0.0)
-        self.bounding_box_feed = max(self.bounding_box_feed, 1.0)
-        self.draw_feed = max(self.draw_feed, 1.0)
-        self.travel_feed = max(self.travel_feed, 1.0)
+        self.bounding_box_speed = max(self.bounding_box_speed, 0.001)
+        self.draw_speed = max(self.draw_speed, 0.001)
+        self.travel_speed = max(self.travel_speed, 0.001)
         self.curve_tolerance = max(self.curve_tolerance, 0.01)
+        if self.output_filename is not None:
+            self.output_filename = self.output_filename.strip() or None
         if self.crop:
             self.crop = self.crop.normalized()
 
     def to_mapping(self) -> dict[str, Any]:
         self.validate()
         data = asdict(self)
+        for key in (
+            "home_x",
+            "home_y",
+            "home_z",
+            "z_hop",
+            "z_safe_height",
+            "draw_speed",
+            "travel_speed",
+        ):
+            data.pop(key, None)
         if self.crop is None:
             data["crop"] = None
         return data
@@ -198,6 +240,7 @@ def save_settings(
     settings: PlotterSettings, path: Path = DEFAULT_SETTINGS_PATH
 ) -> None:
     settings.validate()
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(
             settings.to_mapping(),
