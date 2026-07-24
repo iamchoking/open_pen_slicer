@@ -28,6 +28,7 @@ from .geometry import (
     transform_strokes,
 )
 from .settings import (
+    DEFAULT_RECENTS_PATH,
     DEFAULT_SETTINGS_PATH,
     MAX_RECENT_FILES,
     PROJECT_ROOT,
@@ -38,6 +39,7 @@ from .settings import (
     default_output_filename,
     load_settings,
     normalize_output_filename,
+    save_recent_files,
     save_settings,
     target_directory_path,
 )
@@ -858,6 +860,11 @@ class PlotterApp(_TkBase):
             settings.active_file = file_text
             settings.recent_files = self.settings.recent_files
             save_settings(settings, DEFAULT_SETTINGS_PATH)
+            save_recent_files(
+                settings.recent_files,
+                DEFAULT_RECENTS_PATH,
+                settings.output_filename,
+            )
             self.settings = settings
         except Exception as exc:
             self.status_var.set(f"Loaded DXF, but could not save file history: {exc}")
@@ -1829,6 +1836,11 @@ class PlotterApp(_TkBase):
         try:
             settings = self._settings_from_ui()
             save_settings(settings, DEFAULT_SETTINGS_PATH)
+            save_recent_files(
+                settings.recent_files,
+                DEFAULT_RECENTS_PATH,
+                settings.output_filename,
+            )
         except Exception as exc:
             messagebox.showerror("Save settings failed", str(exc))
             self.status_var.set("Save settings failed.")

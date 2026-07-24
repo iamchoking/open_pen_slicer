@@ -10,6 +10,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = PROJECT_ROOT / "config"
 DEFAULT_SETTINGS_PATH = CONFIG_DIR / "settings.yaml"
+DEFAULT_RECENTS_PATH = CONFIG_DIR / "recents.yaml"
 DOWNLOADS_DIR = Path.home() / "Downloads"
 TARGET_DOWNLOADS = "Downloads"
 MAX_RECENT_FILES = 10
@@ -128,8 +129,6 @@ class PlotterSettings:
             return settings
 
         for name in (
-            "active_file",
-            "recent_files",
             "device_id",
             "home_x",
             "home_y",
@@ -149,19 +148,11 @@ class PlotterSettings:
             "target_directory",
             "clear_before_write",
             "eject_after_write",
-            "output_filename",
         ):
             if name not in data:
                 continue
             value = data[name]
-            if name == "active_file":
-                settings.active_file = str(value) if value else None
-            elif name == "recent_files":
-                if isinstance(value, list):
-                    settings.recent_files = [
-                        str(item) for item in value if str(item).strip()
-                    ]
-            elif name == "device_id":
+            if name == "device_id":
                 settings.device_id = str(value) if value else "CE3PRO"
             elif name == "target_directory":
                 settings.target_directory = str(value) if value else TARGET_DOWNLOADS
@@ -169,8 +160,6 @@ class PlotterSettings:
                 settings.clear_before_write = _bool_from_value(value)
             elif name == "eject_after_write":
                 settings.eject_after_write = _bool_from_value(value)
-            elif name == "output_filename":
-                settings.output_filename = str(value) if value else None
             elif name in {"rotation_quarters", "bounding_box_repeat"}:
                 try:
                     setattr(settings, name, int(float(value)))
@@ -183,8 +172,6 @@ class PlotterSettings:
                     pass
 
         settings.crop = CropBox.from_mapping(data.get("crop"))
-        if settings.active_file:
-            settings.recent_files = [settings.active_file, *settings.recent_files]
 
         # Migrate the older offset model:
         # output = x_offset + (source - crop.xmin) * scale
@@ -237,6 +224,9 @@ class PlotterSettings:
     def to_mapping(self) -> dict[str, Any]:
         self.validate()
         data = asdict(self)
+        data.pop("active_file", None)
+        data.pop("recent_files", None)
+        data.pop("output_filename", None)
         for key in (
             "home_x",
             "home_y",
@@ -288,14 +278,72 @@ def _bool_from_value(value: Any) -> bool:
     return text in {"1", "true", "yes", "on"}
 
 
-def load_settings(path: Path = DEFAULT_SETTINGS_PATH) -> PlotterSettings:
+def load_file_history(
+    path: Path = DEFAULT_RECENTS_PATH,
+) -> tuple[str | None, list[str], str | None]:
     if not path.exists():
-        return PlotterSettings()
+        return None, [], None
     with path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
     if not isinstance(data, dict):
-        return PlotterSettings()
-    return PlotterSettings.from_mapping(data)
+        return None, [], None
+    active_file = str(data["active_file"]) if data.get("active_file") else None
+    output_filename = (
+        str(data["output_filename"]).strip() if data.get("output_filename") else None
+    )
+    recent_files = data.get("recent_files", [])
+    if not isinstance(recent_files, list):
+        recent_files = []
+    cleaned = _clean_recent_files(
+        ([active_file] if active_file else []) + [str(item) for item in recent_files]
+    )
+    active_file = active_file if active_file in cleaned else (cleaned[0] if cleaned else None)
+    return active_file, cleaned, output_filename or None
+
+
+def load_recent_files(path: Path = DEFAULT_RECENTS_PATH) -> list[str]:
+    return load_file_history(path)[1]
+
+
+def save_recent_files(
+    recent_files: list[str],
+    path: Path = DEFAULT_RECENTS_PATH,
+    output_filename: str | None = None,
+) -> None:
+    cleaned = _clean_recent_files(recent_files)
+    output_filename = output_filename.strip() if output_filename else None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(
+            {
+                "active_file": cleaned[0] if cleaned else None,
+                "output_filename": output_filename or None,
+                "recent_files": cleaned,
+            },
+            handle,
+            sort_keys=False,
+            default_flow_style=False,
+        )
+
+
+def load_settings(path: Path = DEFAULT_SETTINGS_PATH) -> PlotterSettings:
+    active_file, recent_files, output_filename = load_file_history()
+    if not path.exists():
+        settings = PlotterSettings()
+        settings.active_file = active_file
+        settings.recent_files = recent_files
+        settings.output_filename = output_filename
+        return settings
+    with path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        settings = PlotterSettings()
+    else:
+        settings = PlotterSettings.from_mapping(data)
+    settings.active_file = active_file
+    settings.recent_files = recent_files
+    settings.output_filename = output_filename
+    return settings
 
 
 def save_settings(

@@ -17,10 +17,12 @@ from pen_plotter.geometry import (
     transform_strokes,
 )
 from pen_plotter.settings import (
+    DEFAULT_RECENTS_PATH,
     DEFAULT_SETTINGS_PATH,
     CropBox,
     default_gcode_path,
     load_settings,
+    save_recent_files,
     save_settings,
 )
 from pen_plotter.printer import (
@@ -37,7 +39,10 @@ def parse_args() -> argparse.Namespace:
         "-i",
         type=Path,
         default=None,
-        help="DXF path. Defaults to active_file or recent_files from config/settings.yaml.",
+        help=(
+            "DXF path. Defaults to active_file or recent_files "
+            "from config/recents.yaml."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -219,6 +224,11 @@ def main() -> None:
             )
             save_printer_profile(printer)
         save_settings(settings, DEFAULT_SETTINGS_PATH)
+        save_recent_files(
+            settings.recent_files,
+            DEFAULT_RECENTS_PATH,
+            settings.output_filename,
+        )
 
     print(f"Wrote {summary.output_path}")
     print(f"Strokes: {summary.stroke_count}")

@@ -42,7 +42,8 @@ conda run -n raisim python scripts/run_ui.py
 5. Choose the Device. Use **Edit** to open its YAML in Notepad and **Reload**
    after changing printer properties, then use **Settings** to choose the DXF,
    set scale, rotate the DXF, and set bounding box settings.
-6. Press **Save Settings** to save the current UI values to `config/settings.yaml`.
+6. Press **Save Settings** to save slicer settings to `config/settings.yaml`
+   and file/output history to ignored `config/recents.yaml`.
 7. Set the output **Filename** and choose **Target Directory**.
 8. Press **Generate**.
 
@@ -59,14 +60,15 @@ USB/SD drives. **Generate** writes the editable **Filename** to that target.
 When a removable target is selected, **Clear Drive** removes existing `*.gcode`
 files from that drive before the new file is written, and **Eject** safely
 ejects it after a successful write.
-**Save Settings** writes the current UI values to
-`config/settings.yaml` without generating G-code.
-Dropped or selected DXF files are saved immediately as `active_file` plus the
-last 10 `recent_files` in `config/settings.yaml`.
+**Save Settings** writes slicer settings to `config/settings.yaml` and
+file/output history to ignored `config/recents.yaml` without generating G-code.
+Dropped or selected DXF files are saved immediately in ignored
+`config/recents.yaml` as `active_file`, `output_filename`, and the last
+10 `recent_files`.
 
 ## CLI Workflow
 
-Generate using the current `config/settings.yaml` active/recent DXF:
+Generate using the current `config/recents.yaml` active/recent DXF:
 
 ```powershell
 conda run -n raisim python scripts/generate_cli.py
