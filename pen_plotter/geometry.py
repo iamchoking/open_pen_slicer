@@ -41,6 +41,8 @@ class Drawing:
     preview_strokes: list[PreviewStroke]
     text_labels: list[TextLabel]
     bounds: CropBox
+    text_strokes: list[Stroke] = field(default_factory=list)
+    text_blocks: list[list[Stroke]] = field(default_factory=list)
     entity_counts: Counter[str] = field(default_factory=Counter)
     skipped_counts: Counter[str] = field(default_factory=Counter)
 
@@ -52,6 +54,13 @@ class Drawing:
     def segment_count(self) -> int:
         return sum(max(0, len(stroke) - 1) for stroke in self.strokes)
 
+    @property
+    def non_text_strokes(self) -> list[Stroke]:
+        if not self.text_strokes:
+            return list(self.strokes)
+        non_text_count = max(0, len(self.strokes) - len(self.text_strokes))
+        return self.strokes[:non_text_count]
+
 
 def load_dxf_drawing(
     source_path: Path,
@@ -60,7 +69,8 @@ def load_dxf_drawing(
 ) -> Drawing:
     """Read drawable DXF entities and flatten them into XY strokes."""
     doc = ezdxf.readfile(source_path)
-    strokes: list[Stroke] = []
+    geometry_strokes: list[Stroke] = []
+    text_blocks: list[list[Stroke]] = []
     preview_strokes: list[PreviewStroke] = []
     text_labels: list[TextLabel] = []
     entity_counts: Counter[str] = Counter()
@@ -76,7 +86,10 @@ def load_dxf_drawing(
         color = _entity_color(doc, entity)
         special_strokes = _entity_to_special_strokes(doc, entity, curve_tolerance)
         if special_strokes:
-            strokes.extend(special_strokes)
+            if dxftype == "TOLERANCE":
+                text_blocks.append(special_strokes)
+            else:
+                geometry_strokes.extend(special_strokes)
             preview_strokes.extend(
                 PreviewStroke(stroke, color) for stroke in special_strokes
             )
@@ -85,11 +98,11 @@ def load_dxf_drawing(
         label = _entity_to_text_label(entity, color)
         if label:
             text_labels.append(label)
-            text_strokes = _entity_to_text_strokes(entity, curve_tolerance)
-            if text_strokes:
-                strokes.extend(text_strokes)
+            rendered_text_strokes = _entity_to_text_strokes(entity, curve_tolerance)
+            if rendered_text_strokes:
+                text_blocks.append(rendered_text_strokes)
                 preview_strokes.extend(
-                    PreviewStroke(stroke, color) for stroke in text_strokes
+                    PreviewStroke(stroke, color) for stroke in rendered_text_strokes
                 )
             else:
                 skipped_counts[dxftype] += 1
@@ -100,7 +113,7 @@ def load_dxf_drawing(
         except TypeError:
             preview_stroke = _entity_to_preview_stroke(entity)
             if preview_stroke and _stroke_length(preview_stroke) > 0.001:
-                strokes.append(preview_stroke)
+                geometry_strokes.append(preview_stroke)
                 preview_strokes.append(PreviewStroke(preview_stroke, color))
             else:
                 skipped_counts[dxftype] += 1
@@ -110,11 +123,14 @@ def load_dxf_drawing(
             continue
 
         if stroke and _stroke_length(stroke) > 0.001:
-            strokes.append(stroke)
+            geometry_strokes.append(stroke)
             preview_strokes.append(PreviewStroke(stroke, color))
         else:
             skipped_counts[f"{dxftype}:empty"] += 1
 
+    text_blocks = _sort_text_blocks_top_left(text_blocks)
+    text_strokes = [stroke for block in text_blocks for stroke in block]
+    strokes = geometry_strokes + text_strokes
     bounds = compute_bounds([item.points for item in preview_strokes] + strokes)
     return Drawing(
         source_path=source_path,
@@ -122,6 +138,8 @@ def load_dxf_drawing(
         preview_strokes=preview_strokes,
         text_labels=text_labels,
         bounds=bounds,
+        text_strokes=text_strokes,
+        text_blocks=text_blocks,
         entity_counts=entity_counts,
         skipped_counts=skipped_counts,
     )
@@ -141,6 +159,15 @@ def compute_bounds(strokes: Iterable[Stroke]) -> CropBox:
     return CropBox(min(xs), min(ys), max(xs), max(ys))
 
 
+def _sort_text_blocks_top_left(text_blocks: Iterable[list[Stroke]]) -> list[list[Stroke]]:
+    return sorted(text_blocks, key=_text_block_top_left_key)
+
+
+def _text_block_top_left_key(text_block: list[Stroke]) -> tuple[float, float]:
+    bounds = compute_bounds(text_block).normalized()
+    return (-bounds.ymax, bounds.xmin)
+
+
 def rotate_drawing_quarters(drawing: Drawing, quarters: int) -> Drawing:
     rotated = drawing
     for _index in range(int(quarters) % 4):
@@ -153,6 +180,11 @@ def rotate_drawing_ccw(
 ) -> Drawing:
     pivot = pivot or crop_box_center(drawing.bounds)
     strokes = [_rotate_stroke_ccw(stroke, pivot) for stroke in drawing.strokes]
+    text_blocks = [
+        [_rotate_stroke_ccw(stroke, pivot) for stroke in block]
+        for block in drawing.text_blocks
+    ]
+    text_strokes = [stroke for block in text_blocks for stroke in block]
     preview_strokes = [
         PreviewStroke(
             points=_rotate_stroke_ccw(preview_stroke.points, pivot),
@@ -180,6 +212,8 @@ def rotate_drawing_ccw(
         preview_strokes=preview_strokes,
         text_labels=text_labels,
         bounds=bounds,
+        text_strokes=text_strokes,
+        text_blocks=text_blocks,
         entity_counts=drawing.entity_counts.copy(),
         skipped_counts=drawing.skipped_counts.copy(),
     )
@@ -241,6 +275,18 @@ def clip_strokes_to_crop(strokes: Iterable[Stroke], crop: CropBox) -> list[Strok
     ]
 
 
+def clip_stroke_blocks_to_crop(
+    stroke_blocks: Iterable[Iterable[Stroke]],
+    crop: CropBox,
+) -> list[list[Stroke]]:
+    clipped_blocks: list[list[Stroke]] = []
+    for block in stroke_blocks:
+        clipped = clip_strokes_to_crop(block, crop)
+        if clipped:
+            clipped_blocks.append(clipped)
+    return clipped_blocks
+
+
 def _rotate_stroke_ccw(stroke: Stroke, pivot: Point) -> Stroke:
     return [rotate_point_ccw(point, pivot) for point in stroke]
 
@@ -262,6 +308,17 @@ def transform_strokes(
             ]
         )
     return transformed
+
+
+def transform_stroke_blocks(
+    stroke_blocks: Iterable[Iterable[Stroke]],
+    crop: CropBox,
+    settings: PlotterSettings,
+) -> list[list[Stroke]]:
+    return [
+        transform_strokes(block, crop, settings)
+        for block in stroke_blocks
+    ]
 
 
 def plot_bounds_for_crop(crop: CropBox, settings: PlotterSettings) -> CropBox:

@@ -20,11 +20,13 @@ from .gcode import (
 from .geometry import (
     Drawing,
     crop_box_center,
+    clip_stroke_blocks_to_crop,
     clip_strokes_to_crop,
     load_dxf_drawing,
     rotate_crop_box_ccw,
     rotate_drawing_ccw,
     rotate_drawing_quarters,
+    transform_stroke_blocks,
     transform_strokes,
 )
 from .settings import (
@@ -43,6 +45,7 @@ from .settings import (
     save_settings,
     target_directory_path,
 )
+from .stroke_optimizer import optimize_plot_strokes
 from .target_directories import (
     TargetDirectoryChoice,
     clear_gcode_files_from_target,
@@ -200,6 +203,7 @@ class PlotterApp(_TkBase):
         self.z_hop_var = self._field_var(self.settings.z_hop)
         self.z_safe_height_var = self._field_var(self.settings.z_safe_height)
         self.scale_var = self._field_var(self.settings.scale)
+        self.curve_tolerance_var = self._field_var(self.settings.curve_tolerance)
         self.bounding_box_repeat_var = self._field_var(self.settings.bounding_box_repeat)
         self.bounding_box_offset_var = self._field_var(self.settings.bounding_box_offset)
         self.bounding_box_speed_var = self._field_var(self.settings.bounding_box_speed)
@@ -302,16 +306,26 @@ class PlotterApp(_TkBase):
         ttk.Separator(settings_group, orient="horizontal").grid(
             row=1, column=0, columnspan=2, sticky="ew", pady=(1, 5)
         )
-        ttk.Label(settings_group, text="Scale").grid(
+        ttk.Label(settings_group, text="Scale / Tol").grid(
             row=2, column=0, sticky="w", padx=(0, 6), pady=(0, 5)
         )
         scale_controls = controls_frame(2)
-        scale_controls.columnconfigure(1, weight=1)
+        scale_controls.columnconfigure(4, weight=1)
         ttk.Entry(scale_controls, textvariable=self.scale_var, width=NARROW_ENTRY_WIDTH).grid(
             row=0, column=0, sticky="w"
         )
+        ttk.Label(scale_controls, text="Tol").grid(
+            row=0, column=1, sticky="w", padx=(8, 3)
+        )
+        ttk.Entry(
+            scale_controls,
+            textvariable=self.curve_tolerance_var,
+            width=NARROW_ENTRY_WIDTH,
+        ).grid(
+            row=0, column=2, sticky="w"
+        )
         ttk.Button(scale_controls, text="Rotate", width=7, command=self._rotate_drawing_ccw).grid(
-            row=0, column=1, sticky="e", padx=(6, 0)
+            row=0, column=4, sticky="e", padx=(6, 0)
         )
 
         ttk.Separator(settings_group, orient="horizontal").grid(
@@ -617,13 +631,11 @@ class PlotterApp(_TkBase):
                 paths.append(path)
 
         self.dxf_files = _dedupe_paths(paths)[:MAX_RECENT_FILES]
-        self.file_label_to_path = {
-            _file_display_text(path): path for path in self.dxf_files
-        }
+        self.file_label_to_path = _file_label_map(self.dxf_files)
         labels = list(self.file_label_to_path)
         self.file_menu.configure(values=labels)
         if self.current_file:
-            self.file_var.set(_file_display_text(self.current_file))
+            self.file_var.set(self._file_label_for_path(self.current_file))
         elif not labels:
             self.file_var.set("")
 
@@ -718,7 +730,7 @@ class PlotterApp(_TkBase):
             self.current_file = next((path for path in self.dxf_files if path.exists()), None)
         if not self.current_file:
             return
-        self.file_var.set(_file_display_text(self.current_file))
+        self.file_var.set(self._file_label_for_path(self.current_file))
         self._sync_output_filename_for_file(prefer_saved=True)
 
     def _on_file_selected(self, _event=None) -> None:
@@ -732,7 +744,7 @@ class PlotterApp(_TkBase):
             return
         previous_file = self.current_file
         self.current_file = selected.resolve()
-        self.file_var.set(_file_display_text(self.current_file))
+        self.file_var.set(self._file_label_for_path(self.current_file))
         self._sync_output_filename_for_file(
             previous_file=previous_file,
             force_default=True,
@@ -744,7 +756,7 @@ class PlotterApp(_TkBase):
         if self.current_file is None:
             self.current_file = next((path for path in self.dxf_files if path.exists()), None)
         if self.current_file is not None:
-            self.file_var.set(_file_display_text(self.current_file))
+            self.file_var.set(self._file_label_for_path(self.current_file))
             self._sync_output_filename_for_file()
 
         if self.current_file is None:
@@ -757,10 +769,7 @@ class PlotterApp(_TkBase):
             return
 
         try:
-            tolerance = self._float_from_var(
-                self.scale_var, self.settings.scale, minimum=0.0001
-            )
-            tolerance = max(0.05, self.settings.curve_tolerance / max(tolerance, 0.0001))
+            tolerance = self._effective_curve_tolerance()
             self.status_var.set(f"Loading {self.current_file.name}...")
             self.update_idletasks()
             drawing = load_dxf_drawing(self.current_file, curve_tolerance=tolerance)
@@ -851,7 +860,7 @@ class PlotterApp(_TkBase):
             self.settings.recent_files,
         )
         self._refresh_file_list()
-        self.file_var.set(_file_display_text(self.current_file))
+        self.file_var.set(self._file_label_for_path(self.current_file))
 
         if not save:
             return
@@ -868,6 +877,13 @@ class PlotterApp(_TkBase):
             self.settings = settings
         except Exception as exc:
             self.status_var.set(f"Loaded DXF, but could not save file history: {exc}")
+
+    def _file_label_for_path(self, path: Path) -> str:
+        path_key = _normalized_path_text(path)
+        for label, candidate in self.file_label_to_path.items():
+            if _normalized_path_text(candidate) == path_key:
+                return label
+        return _file_display_text(path)
 
     def _rotate_drawing_ccw(self) -> None:
         if not self.drawing:
@@ -1640,6 +1656,16 @@ class PlotterApp(_TkBase):
     def _current_scale(self) -> float:
         return self._float_from_var(self.scale_var, self.settings.scale, minimum=0.0001)
 
+    def _current_curve_tolerance(self) -> float:
+        return self._float_from_var(
+            self.curve_tolerance_var,
+            self.settings.curve_tolerance,
+            minimum=0.01,
+        )
+
+    def _effective_curve_tolerance(self) -> float:
+        return max(0.05, self._current_curve_tolerance() / self._current_scale())
+
     def _buildplate_source_box(
         self, settings: PlotterSettings | None = None
     ) -> CropBox | None:
@@ -1800,7 +1826,7 @@ class PlotterApp(_TkBase):
                 self.settings.travel_speed,
                 minimum=0.001,
             ),
-            curve_tolerance=self.settings.curve_tolerance,
+            curve_tolerance=self._current_curve_tolerance(),
             target_directory=self._selected_target_directory_value(),
             clear_before_write=bool(self.clear_before_write_var.get()),
             eject_after_write=bool(self.eject_after_write_var.get()),
@@ -1855,12 +1881,19 @@ class PlotterApp(_TkBase):
             return
 
         settings = self._settings_from_ui()
-        cropped = clip_strokes_to_crop(self.drawing.strokes, self.crop)
-        if not cropped:
+        cropped_geometry = clip_strokes_to_crop(self.drawing.non_text_strokes, self.crop)
+        cropped_text_blocks = clip_stroke_blocks_to_crop(
+            self.drawing.text_blocks,
+            self.crop,
+        )
+        if not cropped_geometry and not cropped_text_blocks:
             messagebox.showwarning("Empty crop", "The crop box does not contain plot geometry.")
             return
 
-        transformed = transform_strokes(cropped, self.crop, settings)
+        transformed = optimize_plot_strokes(
+            transform_strokes(cropped_geometry, self.crop, settings),
+            transform_stroke_blocks(cropped_text_blocks, self.crop, settings),
+        )
         boundary_check = self._plot_boundary_check(settings)
         if boundary_check.blocked:
             self.bounds_warning_var.set(boundary_check.message)
@@ -1984,7 +2017,28 @@ def _settings_file_text(path: Path | None) -> str | None:
 
 
 def _file_display_text(path: Path) -> str:
-    return _settings_file_text(path) or str(path)
+    parent = path.parent
+    try:
+        parent_text = parent.resolve().relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        parent_text = str(parent.resolve())
+    return f"{path.name} - {parent_text}"
+
+
+def _file_label_map(paths: list[Path]) -> dict[str, Path]:
+    labels: dict[str, Path] = {}
+    name_counts: dict[str, int] = {}
+    for path in paths:
+        name_counts[path.name.casefold()] = name_counts.get(path.name.casefold(), 0) + 1
+
+    for path in paths:
+        label = _file_display_text(path)
+        if name_counts[path.name.casefold()] > 1:
+            label = f"{label} [{path.drive or 'relative'}]"
+        while label in labels:
+            label = f"{label}."
+        labels[label] = path
+    return labels
 
 
 def _dedupe_paths(paths: list[Path]) -> list[Path]:

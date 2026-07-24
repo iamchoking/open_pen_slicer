@@ -11,6 +11,10 @@ The generated G-code:
 - lifts to `home_z + z_safe_height` before plotting and before the final top-left move
 - traces padded 5 mm dotted bounding boxes from outermost to innermost, then
   marks the selected crop corners with L-shapes before plotting
+- plots whole text/annotation blocks after the preflight box marks, ordered
+  top-left to bottom-right in the original DXF orientation, then optimized
+  non-text geometry with adjacent merge, hashed endpoint merge, and 10 mm
+  center-out spiral block ordering
 - lifts/drops Z for pen up/down strokes
 - never emits extrusion moves
 - never heats the hotend or bed
@@ -41,7 +45,7 @@ conda run -n raisim python scripts/run_ui.py
 4. Press **Set Origin**, then drag the green Ender 3 Pro buildplate outline to place its blue lower-left home marker in the DXF, or press **Center** to center the crop inside the dotted printable area.
 5. Choose the Device. Use **Edit** to open its YAML in Notepad and **Reload**
    after changing printer properties, then use **Settings** to choose the DXF,
-   set scale, rotate the DXF, and set bounding box settings.
+   set scale, curve tolerance, rotate the DXF, and set bounding box settings.
 6. Press **Save Settings** to save slicer settings to `config/settings.yaml`
    and file/output history to ignored `config/recents.yaml`.
 7. Set the output **Filename** and choose **Target Directory**.

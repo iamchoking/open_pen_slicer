@@ -11,9 +11,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from pen_plotter.gcode import generate_gcode, plot_bounds_including_preflight
 from pen_plotter.geometry import (
+    clip_stroke_blocks_to_crop,
     clip_strokes_to_crop,
     load_dxf_drawing,
     rotate_drawing_quarters,
+    transform_stroke_blocks,
     transform_strokes,
 )
 from pen_plotter.settings import (
@@ -25,6 +27,7 @@ from pen_plotter.settings import (
     save_recent_files,
     save_settings,
 )
+from pen_plotter.stroke_optimizer import optimize_plot_strokes
 from pen_plotter.printer import (
     check_gcode_bounds,
     load_printer_profiles,
@@ -186,8 +189,12 @@ def main() -> None:
     if boundary_check.warning:
         print("Warning: " + boundary_check.message)
 
-    cropped = clip_strokes_to_crop(drawing.strokes, crop)
-    transformed = transform_strokes(cropped, crop, settings)
+    cropped_geometry = clip_strokes_to_crop(drawing.non_text_strokes, crop)
+    cropped_text_blocks = clip_stroke_blocks_to_crop(drawing.text_blocks, crop)
+    transformed = optimize_plot_strokes(
+        transform_strokes(cropped_geometry, crop, settings),
+        transform_stroke_blocks(cropped_text_blocks, crop, settings),
+    )
     output = args.output or default_gcode_path(
         source,
         settings.target_directory,
