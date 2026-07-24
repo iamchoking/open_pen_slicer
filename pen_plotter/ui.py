@@ -12,6 +12,7 @@ except ImportError:  # pragma: no cover - dependency is listed for runtime insta
     TkinterDnD = None
 
 from .gcode import (
+    bounding_box_corner_l_strokes,
     bounding_box_dotted_strokes,
     generate_gcode,
     plot_bounds_including_preflight,
@@ -1312,26 +1313,6 @@ class PlotterApp(_TkBase):
         if not self.crop:
             return
 
-        vertex_box = self.crop.normalized()
-        vertex_color = "#fca5a5"
-        for x, y in (
-            (vertex_box.xmin, vertex_box.ymin),
-            (vertex_box.xmax, vertex_box.ymin),
-            (vertex_box.xmax, vertex_box.ymax),
-            (vertex_box.xmin, vertex_box.ymax),
-        ):
-            cx, cy = self._source_to_canvas((x, y))
-            self._crop_item_ids.extend(
-                [
-                    self.canvas.create_line(
-                        cx - 4, cy, cx + 4, cy, fill=vertex_color, width=1
-                    ),
-                    self.canvas.create_line(
-                        cx, cy - 4, cx, cy + 4, fill=vertex_color, width=1
-                    ),
-                ]
-            )
-
         for plot_stroke in bounding_box_dotted_strokes(self.crop, settings):
             coords: list[float] = []
             for point in plot_stroke:
@@ -1349,6 +1330,26 @@ class PlotterApp(_TkBase):
                     width=1,
                     capstyle=tk.ROUND,
                     joinstyle=tk.ROUND,
+                )
+            )
+
+        for plot_stroke in bounding_box_corner_l_strokes(self.crop, settings):
+            coords: list[float] = []
+            for point in plot_stroke:
+                coords.extend(
+                    self._source_to_canvas(
+                        self._plot_point_to_source_point(point, settings)
+                    )
+                )
+            if len(coords) < 4:
+                continue
+            self._crop_item_ids.append(
+                self.canvas.create_line(
+                    *coords,
+                    fill="#ef4444",
+                    width=1,
+                    capstyle=tk.PROJECTING,
+                    joinstyle=tk.MITER,
                 )
             )
 

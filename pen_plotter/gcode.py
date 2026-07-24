@@ -42,7 +42,7 @@ def generate_gcode(
     travel_rate = _gcode_rate_from_speed(settings.travel_speed)
     draw_rate = _gcode_rate_from_speed(settings.draw_speed)
     travel_count = 0
-    crop_outline_box = bounding_box_vertex_box(crop, settings)
+    crop_corner_box = bounding_box_vertex_box(crop, settings)
     crop_outline_boxes = bounding_box_outline_boxes(crop, settings)
     crop_outline_rate = _gcode_rate_from_speed(settings.bounding_box_speed)
     printer = load_printer_profile(settings.device_id)
@@ -65,19 +65,9 @@ def generate_gcode(
         ]
     )
 
-    if crop_outline_box:
-        travel_count += _append_box_vertices(
-            lines=lines,
-            box=crop_outline_box,
-            label="Selected crop box vertices",
-            pen_down_z=pen_down_z,
-            pen_up_z=pen_up_z,
-            first_travel_z=safe_z,
-            travel_rate=travel_rate,
-            z_move_rate=z_move_rate,
-        )
+    first_preflight_z = safe_z
     for pass_index, crop_outline_box in enumerate(crop_outline_boxes, start=1):
-        offset = pass_index * settings.bounding_box_offset
+        offset = (settings.bounding_box_repeat - pass_index + 1) * settings.bounding_box_offset
         travel_count += _append_dotted_box(
             lines=lines,
             box=crop_outline_box,
@@ -88,12 +78,24 @@ def generate_gcode(
             ),
             pen_down_z=pen_down_z,
             pen_up_z=pen_up_z,
-            first_travel_z=pen_up_z,
+            first_travel_z=first_preflight_z,
             travel_rate=travel_rate,
             draw_rate=crop_outline_rate,
             z_move_rate=z_move_rate,
         )
-    if crop_outline_box:
+        first_preflight_z = pen_up_z
+    if crop_corner_box:
+        travel_count += _append_corner_l_marks(
+            lines=lines,
+            box=crop_corner_box,
+            label="Selected crop box corner L marks",
+            pen_down_z=pen_down_z,
+            pen_up_z=pen_up_z,
+            first_travel_z=first_preflight_z,
+            travel_rate=travel_rate,
+            draw_rate=crop_outline_rate,
+            z_move_rate=z_move_rate,
+        )
         lines.append(f"G0 Z{_fmt(pen_up_z)} F{_fmt(z_move_rate)} ; pen up after crop bounds")
 
     for index, stroke in enumerate(strokes, start=1):
@@ -176,7 +178,7 @@ def _append_dotted_box(
     return travel_count
 
 
-def _append_box_vertices(
+def _append_corner_l_marks(
     lines: list[str],
     box: CropBox,
     label: str,
@@ -184,24 +186,28 @@ def _append_box_vertices(
     pen_up_z: float,
     first_travel_z: float,
     travel_rate: float,
+    draw_rate: float,
     z_move_rate: float,
 ) -> int:
-    corners = _box_corners(box)
-    if not corners:
+    marks = _corner_l_strokes(box)
+    if not marks:
         return 0
 
     lines.append(f"; {label}")
-    for corner_index, corner in enumerate(corners):
-        lift_z = first_travel_z if corner_index == 0 else pen_up_z
+    for mark_index, mark in enumerate(marks):
+        start = mark[0]
+        lift_z = first_travel_z if mark_index == 0 else pen_up_z
         lines.extend(
             [
                 f"G0 Z{_fmt(lift_z)} F{_fmt(z_move_rate)}",
-                f"G0 X{_fmt(corner[0])} Y{_fmt(corner[1])} F{_fmt(travel_rate)}",
-                f"G1 Z{_fmt(pen_down_z)} F{_fmt(z_move_rate)} ; mark vertex",
-                f"G0 Z{_fmt(pen_up_z)} F{_fmt(z_move_rate)} ; pen up after vertex",
+                f"G0 X{_fmt(start[0])} Y{_fmt(start[1])} F{_fmt(travel_rate)}",
+                f"G1 Z{_fmt(pen_down_z)} F{_fmt(z_move_rate)} ; pen down for corner mark",
             ]
         )
-    return len(corners)
+        for x, y in mark[1:]:
+            lines.append(f"G1 X{_fmt(x)} Y{_fmt(y)} F{_fmt(draw_rate)}")
+        lines.append(f"G0 Z{_fmt(pen_up_z)} F{_fmt(z_move_rate)} ; pen up after corner mark")
+    return len(marks)
 
 
 def plot_bounds_including_preflight(crop: CropBox, settings: PlotterSettings) -> CropBox:
@@ -226,7 +232,7 @@ def bounding_box_outline_boxes(crop: CropBox, settings: PlotterSettings) -> list
         return []
     return [
         _expand_box(box, index * settings.bounding_box_offset)
-        for index in range(1, settings.bounding_box_repeat + 1)
+        for index in range(settings.bounding_box_repeat, 0, -1)
     ]
 
 
@@ -235,6 +241,13 @@ def bounding_box_dotted_strokes(crop: CropBox, settings: PlotterSettings) -> lis
     for box in bounding_box_outline_boxes(crop, settings):
         strokes.extend(_dotted_outline_strokes(box))
     return strokes
+
+
+def bounding_box_corner_l_strokes(crop: CropBox, settings: PlotterSettings) -> list[Stroke]:
+    box = _crop_outline_box(crop, settings)
+    if box is None:
+        return []
+    return _corner_l_strokes(box)
 
 
 def _crop_outline_box(crop: CropBox, settings: PlotterSettings) -> CropBox | None:
@@ -275,6 +288,20 @@ def _box_corners(box: CropBox) -> Stroke:
         (box.xmax, box.ymin),
         (box.xmax, box.ymax),
         (box.xmin, box.ymax),
+    ]
+
+
+def _corner_l_strokes(box: CropBox) -> list[Stroke]:
+    box = box.normalized()
+    leg = min(max(min(box.width, box.height) * 0.06, 2.0), 8.0)
+    leg = min(leg, box.width / 2.0, box.height / 2.0)
+    if leg <= 0.0:
+        return []
+    return [
+        [(box.xmin + leg, box.ymin), (box.xmin, box.ymin), (box.xmin, box.ymin + leg)],
+        [(box.xmax - leg, box.ymin), (box.xmax, box.ymin), (box.xmax, box.ymin + leg)],
+        [(box.xmax - leg, box.ymax), (box.xmax, box.ymax), (box.xmax, box.ymax - leg)],
+        [(box.xmin + leg, box.ymax), (box.xmin, box.ymax), (box.xmin, box.ymax - leg)],
     ]
 
 

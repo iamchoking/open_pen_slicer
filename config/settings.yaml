@@ -1,21 +1,24 @@
-active_file: C:\Users\plann\Downloads\pen-plotting\mech_shoulder_front.DXF
+active_file: C:\Users\plann\Downloads\obstacle-set_FULL.DXF
 recent_files:
+- C:\Users\plann\Downloads\obstacle-set_FULL.DXF
 - C:\Users\plann\Downloads\pen-plotting\mech_shoulder_front.DXF
+- C:\Users\plann\Downloads\raipal-mech_pen-plot.DXF
+- C:\Users\plann\Downloads\raipal-racket_pen-plot.DXF
 device_id: CE3PRO
-origin_x: 19.86
-origin_y: -45.78
-scale: 1.2
-rotation_quarters: 0
+origin_x: 20.56
+origin_y: 12.61
+scale: 1.4
+rotation_quarters: 1
 bounding_box_repeat: 1
-bounding_box_offset: 2.0
+bounding_box_offset: 1.0
 bounding_box_speed: 25.0
 curve_tolerance: 0.35
 target_directory: Downloads
 clear_before_write: true
 eject_after_write: true
-output_filename: '[ops] mech_shoulder_front.gcode'
+output_filename: '[ops] obstacle-set_FULL.gcode'
 crop:
-  xmin: 36.747942761248204
-  ymin: 14.953941186064142
-  xmax: 167.13623379309232
-  ymax: 71.81609949479437
+  xmin: 61.49999999999997
+  ymin: -61.50000000000003
+  xmax: 358.5
+  ymax: 358.5

@@ -9,8 +9,8 @@ The generated G-code:
 - uses millimeters and absolute positioning
 - homes the printer
 - lifts to `home_z + z_safe_height` before plotting and before the final top-left move
-- marks the selected crop box vertices, then traces padded 5 mm dotted bounding
-  boxes with lifted 5 mm gaps using configurable Num, Pad, and Spd settings
+- traces padded 5 mm dotted bounding boxes from outermost to innermost, then
+  marks the selected crop corners with L-shapes before plotting
 - lifts/drops Z for pen up/down strokes
 - never emits extrusion moves
 - never heats the hotend or bed
@@ -97,8 +97,9 @@ absolute boundary but enter the safety margin, the UI/CLI shows a warning and
 still writes the G-code. Home Z is treated as pen down height; pen up height is
 `home_z + z_hop`, and safe travel height is `home_z + z_safe_height`.
 
-Set bounding box Num to `0` to plot only the four crop-box vertices. With
-Num above `0`, the first dotted box is Pad millimeters outside those vertices.
+Set bounding box Num to `0` to plot only the four crop-corner L marks. With
+Num above `0`, dotted boxes run from the outermost padded box inward before the
+corner L marks.
 
 ## Text Fonts
 
