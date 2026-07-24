@@ -1,8 +1,5 @@
 device_id: CE3PRO
-origin_x: 19.67
-origin_y: 12.61
-scale: 1.4
-rotation_quarters: 1
+rotation_quarters: 3
 bounding_box_repeat: 2
 bounding_box_offset: 0.5
 bounding_box_speed: 50.0
@@ -10,8 +7,3 @@ curve_tolerance: 0.35
 target_directory: Downloads
 clear_before_write: true
 eject_after_write: true
-crop:
-  xmin: 4.998999999999995
-  ymin: 4.998999999999995
-  xmax: 195.001
-  ymax: 195.001

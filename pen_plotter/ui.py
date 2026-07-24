@@ -37,10 +37,14 @@ from .settings import (
     TARGET_DOWNLOADS,
     CropBox,
     PlotterSettings,
+    RecentFileSettings,
+    apply_recent_file_settings,
     default_gcode_path,
     default_output_filename,
     load_settings,
     normalize_output_filename,
+    recent_file_settings_for,
+    recent_file_settings_with,
     save_recent_files,
     save_settings,
     target_directory_path,
@@ -101,6 +105,7 @@ class PlotterApp(_TkBase):
         self.target_directory_choices: dict[str, TargetDirectoryChoice] = {}
         self.device_label_to_id: dict[str, str] = {}
         self.file_label_to_path: dict[str, Path] = {}
+        self._tolerance_reload_after_id: str | None = None
 
         self._line_item_ids: list[int] = []
         self._text_item_ids: list[int] = []
@@ -116,7 +121,7 @@ class PlotterApp(_TkBase):
         self._setup_drag_and_drop()
 
         self.canvas.bind("<Configure>", lambda _event: self._redraw_canvas())
-        self.after(50, self._load_current_file)
+        self.after(50, self._load_first_recent_file)
 
     def _selected_printer_profile(self) -> PrinterProfile:
         if self.settings.device_id in self.printer_profiles:
@@ -204,6 +209,7 @@ class PlotterApp(_TkBase):
         self.z_safe_height_var = self._field_var(self.settings.z_safe_height)
         self.scale_var = self._field_var(self.settings.scale)
         self.curve_tolerance_var = self._field_var(self.settings.curve_tolerance)
+        self.curve_tolerance_var.trace_add("write", self._on_curve_tolerance_changed)
         self.bounding_box_repeat_var = self._field_var(self.settings.bounding_box_repeat)
         self.bounding_box_offset_var = self._field_var(self.settings.bounding_box_offset)
         self.bounding_box_speed_var = self._field_var(self.settings.bounding_box_speed)
@@ -303,38 +309,41 @@ class PlotterApp(_TkBase):
             row=0, column=1, sticky="w", padx=(6, 0)
         )
 
-        ttk.Separator(settings_group, orient="horizontal").grid(
-            row=1, column=0, columnspan=2, sticky="ew", pady=(1, 5)
+        ttk.Label(settings_group, text="Tolerance").grid(
+            row=1, column=0, sticky="w", padx=(0, 6), pady=(0, 5)
         )
-        ttk.Label(settings_group, text="Scale / Tol").grid(
-            row=2, column=0, sticky="w", padx=(0, 6), pady=(0, 5)
-        )
-        scale_controls = controls_frame(2)
-        scale_controls.columnconfigure(4, weight=1)
-        ttk.Entry(scale_controls, textvariable=self.scale_var, width=NARROW_ENTRY_WIDTH).grid(
-            row=0, column=0, sticky="w"
-        )
-        ttk.Label(scale_controls, text="Tol").grid(
-            row=0, column=1, sticky="w", padx=(8, 3)
-        )
+        tolerance_controls = controls_frame(1)
+        tolerance_controls.columnconfigure(1, weight=1)
         ttk.Entry(
-            scale_controls,
+            tolerance_controls,
             textvariable=self.curve_tolerance_var,
-            width=NARROW_ENTRY_WIDTH,
+            width=SCALE_ENTRY_WIDTH,
         ).grid(
-            row=0, column=2, sticky="w"
-        )
-        ttk.Button(scale_controls, text="Rotate", width=7, command=self._rotate_drawing_ccw).grid(
-            row=0, column=4, sticky="e", padx=(6, 0)
+            row=0, column=0, sticky="w"
         )
 
         ttk.Separator(settings_group, orient="horizontal").grid(
-            row=3, column=0, columnspan=2, sticky="ew", pady=(1, 5)
+            row=2, column=0, columnspan=2, sticky="ew", pady=(1, 5)
+        )
+        ttk.Label(settings_group, text="Scale").grid(
+            row=3, column=0, sticky="w", padx=(0, 6), pady=(0, 5)
+        )
+        scale_controls = controls_frame(3)
+        scale_controls.columnconfigure(1, weight=1)
+        ttk.Entry(scale_controls, textvariable=self.scale_var, width=SCALE_ENTRY_WIDTH).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Button(scale_controls, text="Rotate", width=7, command=self._rotate_drawing_ccw).grid(
+            row=0, column=2, sticky="e", padx=(6, 0)
+        )
+
+        ttk.Separator(settings_group, orient="horizontal").grid(
+            row=4, column=0, columnspan=2, sticky="ew", pady=(1, 5)
         )
         ttk.Label(settings_group, text="Crop").grid(
-            row=4, column=0, sticky="w", padx=(0, 6)
+            row=5, column=0, sticky="w", padx=(0, 6)
         )
-        crop_controls = controls_frame(4)
+        crop_controls = controls_frame(5)
         for column_index in range(3):
             crop_controls.columnconfigure(column_index, weight=1, uniform="crop_buttons")
         self.crop_button = ttk.Button(
@@ -353,12 +362,12 @@ class PlotterApp(_TkBase):
         )
 
         ttk.Separator(settings_group, orient="horizontal").grid(
-            row=5, column=0, columnspan=2, sticky="ew", pady=(6, 5)
+            row=6, column=0, columnspan=2, sticky="ew", pady=(6, 5)
         )
         ttk.Label(settings_group, text="Origin").grid(
-            row=6, column=0, sticky="w", padx=(0, 6)
+            row=7, column=0, sticky="w", padx=(0, 6)
         )
-        origin_controls = controls_frame(6)
+        origin_controls = controls_frame(7)
         for column_index in range(2):
             origin_controls.columnconfigure(column_index, weight=1, uniform="origin_buttons")
         self.origin_button = ttk.Button(
@@ -374,12 +383,12 @@ class PlotterApp(_TkBase):
         )
 
         ttk.Separator(settings_group, orient="horizontal").grid(
-            row=7, column=0, columnspan=2, sticky="ew", pady=(6, 5)
+            row=8, column=0, columnspan=2, sticky="ew", pady=(6, 5)
         )
         ttk.Label(settings_group, text="Box").grid(
-            row=8, column=0, sticky="w", padx=(0, 6)
+            row=9, column=0, sticky="w", padx=(0, 6)
         )
-        bbox_controls = controls_frame(8)
+        bbox_controls = controls_frame(9)
         for index, (label, variable) in enumerate(
             [
                 ("Num", self.bounding_box_repeat_var),
@@ -506,6 +515,31 @@ class PlotterApp(_TkBase):
         variable = tk.StringVar(value=f"{value:g}")
         variable.trace_add("write", lambda *_args: self._update_dimension_readout())
         return variable
+
+    def _on_curve_tolerance_changed(self, *_args) -> None:
+        if self._tolerance_reload_after_id is not None:
+            try:
+                self.after_cancel(self._tolerance_reload_after_id)
+            except tk.TclError:
+                pass
+        self._tolerance_reload_after_id = self.after(
+            450,
+            self._reload_current_file_after_tolerance_change,
+        )
+
+    def _reload_current_file_after_tolerance_change(self) -> None:
+        self._tolerance_reload_after_id = None
+        try:
+            tolerance = float(self.curve_tolerance_var.get())
+        except ValueError:
+            return
+        if tolerance < 0.01:
+            return
+
+        self.settings.curve_tolerance = tolerance
+        if not self.current_file or not self.current_file.exists():
+            return
+        self._load_current_file(apply_recent_state=False, show_errors=False)
 
     def _toggle_crop_mode(self) -> None:
         self.canvas_mode_var.set("pan" if self.canvas_mode_var.get() == "crop" else "crop")
@@ -647,13 +681,37 @@ class PlotterApp(_TkBase):
         labels = [choice.label for choice in choices]
         self.target_directory_menu.configure(values=labels)
 
-        selected_label = self._target_label_for_value(preferred)
-        if selected_label is None:
-            selected_label = self._target_label_for_value(TARGET_DOWNLOADS)
-        if selected_label is None and labels:
-            selected_label = labels[0]
+        selected_label = self._preferred_target_label(preferred, prefer_current)
         self.target_directory_var.set(selected_label or "")
         self._update_eject_after_write_state()
+
+    def _preferred_target_label(
+        self,
+        preferred: str | None,
+        prefer_current: bool,
+    ) -> str | None:
+        current_choice = self._selected_target_directory_choice()
+        if prefer_current and current_choice and current_choice.is_removable:
+            return current_choice.label
+
+        removable_label = next(
+            (
+                label
+                for label, choice in self.target_directory_choices.items()
+                if choice.is_removable
+            ),
+            None,
+        )
+        if removable_label is not None:
+            return removable_label
+
+        selected_label = self._target_label_for_value(preferred)
+        if selected_label is not None:
+            return selected_label
+        selected_label = self._target_label_for_value(TARGET_DOWNLOADS)
+        if selected_label is not None:
+            return selected_label
+        return next(iter(self.target_directory_choices), None)
 
     def _target_label_for_value(self, value: str | None) -> str | None:
         wanted_path = _normalized_path_text(target_directory_path(value))
@@ -724,14 +782,29 @@ class PlotterApp(_TkBase):
 
     def _select_initial_file(self) -> None:
         active = _resolve_project_path(self.settings.active_file)
-        if active and active.exists() and active.suffix.lower() == ".dxf":
+        if active and active.suffix.lower() == ".dxf":
             self.current_file = active
         else:
-            self.current_file = next((path for path in self.dxf_files if path.exists()), None)
+            self.current_file = next((path for path in self.dxf_files), None)
         if not self.current_file:
             return
         self.file_var.set(self._file_label_for_path(self.current_file))
         self._sync_output_filename_for_file(prefer_saved=True)
+
+    def _load_first_recent_file(self) -> None:
+        while True:
+            self._refresh_file_list()
+            self.current_file = next((path for path in self.dxf_files), None)
+            if self.current_file is None:
+                self.status_var.set("No DXF loaded. Drop a DXF file into the UI.")
+                return
+            self.file_var.set(self._file_label_for_path(self.current_file))
+            self._sync_output_filename_for_file(force_default=True)
+            if self._load_current_file(apply_recent_state=True, show_errors=False):
+                return
+            failed_file = self.current_file
+            self._forget_recent_file(failed_file)
+            self.status_var.set(f"Removed unavailable DXF from recents: {failed_file}")
 
     def _on_file_selected(self, _event=None) -> None:
         label = self.file_var.get()
@@ -749,24 +822,36 @@ class PlotterApp(_TkBase):
             previous_file=previous_file,
             force_default=True,
         )
-        self._load_current_file()
+        self._load_current_file(apply_recent_state=True)
 
-    def _load_current_file(self) -> None:
+    def _load_current_file(
+        self,
+        apply_recent_state: bool = False,
+        show_errors: bool = True,
+    ) -> bool:
         self._refresh_file_list()
         if self.current_file is None:
-            self.current_file = next((path for path in self.dxf_files if path.exists()), None)
+            self.current_file = next((path for path in self.dxf_files), None)
         if self.current_file is not None:
             self.file_var.set(self._file_label_for_path(self.current_file))
             self._sync_output_filename_for_file()
 
         if self.current_file is None:
             self.status_var.set("No DXF loaded. Drop a DXF file into the UI.")
-            return
+            return False
 
         if not self.current_file.exists():
             self.status_var.set("Current DXF file is missing.")
-            messagebox.showerror("DXF missing", f"Could not find:\n{self.current_file}")
-            return
+            if show_errors:
+                messagebox.showerror("DXF missing", f"Could not find:\n{self.current_file}")
+            return False
+
+        previous_crop = self.crop.normalized() if self.crop else None
+        recent_state = (
+            self._recent_file_settings_for_current_file()
+            if apply_recent_state
+            else None
+        )
 
         try:
             tolerance = self._effective_curve_tolerance()
@@ -776,12 +861,18 @@ class PlotterApp(_TkBase):
             self.drawing = rotate_drawing_quarters(drawing, self.rotation_quarters)
         except Exception as exc:
             self.drawing = None
-            messagebox.showerror("DXF load failed", str(exc))
+            if show_errors:
+                messagebox.showerror("DXF load failed", str(exc))
             self.status_var.set("DXF load failed.")
-            return
+            return False
 
-        if self.settings.crop and self.current_file == _resolve_project_path(self.settings.active_file):
-            self.crop = self.settings.crop.normalized()
+        if recent_state:
+            self._apply_recent_file_settings_to_ui(recent_state)
+
+        if recent_state and recent_state.crop:
+            self.crop = recent_state.crop.normalized()
+        elif not apply_recent_state and previous_crop:
+            self.crop = previous_crop
         else:
             self.crop = self.drawing.bounds.normalized()
 
@@ -797,6 +888,21 @@ class PlotterApp(_TkBase):
             + (f"; skipped {skipped} non-plot entities" if skipped else "")
         )
         self.status_var.set(f"Loaded {self.current_file.name}.")
+        return True
+
+    def _recent_file_settings_for_current_file(self) -> RecentFileSettings | None:
+        file_text = _settings_file_text(self.current_file)
+        return recent_file_settings_for(file_text, self.settings.recent_file_settings)
+
+    def _apply_recent_file_settings_to_ui(self, state: RecentFileSettings) -> None:
+        if state is None:
+            return
+        apply_recent_file_settings(self.settings, state)
+        if state.scale is not None:
+            self.scale_var.set(_format_number(state.scale))
+        if state.origin_x is not None and state.origin_y is not None:
+            self.origin_x_var.set(_format_number(state.origin_x))
+            self.origin_y_var.set(_format_number(state.origin_y))
 
     def _setup_drag_and_drop(self) -> None:
         if DND_FILES is None:
@@ -830,7 +936,7 @@ class PlotterApp(_TkBase):
             previous_file=previous_file,
             force_default=True,
         )
-        self._load_current_file()
+        self._load_current_file(apply_recent_state=True)
         return "break"
 
     def _drop_event_paths(self, event) -> list[Path]:
@@ -868,15 +974,38 @@ class PlotterApp(_TkBase):
             settings = self._settings_from_ui()
             settings.active_file = file_text
             settings.recent_files = self.settings.recent_files
+            self._store_current_recent_file_settings(settings)
             save_settings(settings, DEFAULT_SETTINGS_PATH)
             save_recent_files(
                 settings.recent_files,
                 DEFAULT_RECENTS_PATH,
-                settings.output_filename,
+                settings.recent_file_settings,
             )
             self.settings = settings
         except Exception as exc:
             self.status_var.set(f"Loaded DXF, but could not save file history: {exc}")
+
+    def _forget_recent_file(self, path: Path | None) -> None:
+        file_text = _settings_file_text(path)
+        self.settings.recent_files = _recent_file_texts_without(
+            file_text,
+            self.settings.recent_files,
+        )
+        self.settings.active_file = (
+            self.settings.recent_files[0] if self.settings.recent_files else None
+        )
+        self.settings.recent_file_settings = recent_file_settings_with(
+            None,
+            self.settings.recent_files,
+            self.settings.recent_file_settings,
+            None,
+        )
+        save_recent_files(
+            self.settings.recent_files,
+            DEFAULT_RECENTS_PATH,
+            self.settings.recent_file_settings,
+        )
+        self._refresh_file_list()
 
     def _file_label_for_path(self, path: Path) -> str:
         path_key = _normalized_path_text(path)
@@ -1454,15 +1583,13 @@ class PlotterApp(_TkBase):
             self.drag_mode = "buildplate"
             return
 
-        handle = self._hit_handle(event.x, event.y)
-        if handle:
-            self.drag_mode = f"resize:{handle}"
-        elif self._point_in_crop_canvas(event.x, event.y):
-            self.drag_mode = "move"
-        else:
-            self.drag_mode = "new"
-            x, y = self._clamp_to_drawing(self.drag_start_source)
-            self.crop = CropBox(x, y, x, y)
+        if self.canvas_mode_var.get() == "crop":
+            handle = self._hit_handle(event.x, event.y)
+            if handle:
+                self.drag_mode = f"resize:{handle}"
+                return
+            self.canvas_mode_var.set("pan")
+            self._set_canvas_mode()
             self._redraw_canvas()
 
     def _on_canvas_drag(self, event) -> None:
@@ -1475,14 +1602,6 @@ class PlotterApp(_TkBase):
 
         if self.drag_mode == "pan" and self.drag_start_view:
             self._pan_view(event.x, event.y)
-        elif self.drag_mode == "move":
-            start_point = self.drag_start_source
-            dx = point[0] - start_point[0]
-            dy = point[1] - start_point[1]
-            self.crop = self._move_crop(start_box, dx, dy)
-        elif self.drag_mode == "new":
-            start_x, start_y = self._clamp_to_drawing(self.drag_start_source)
-            self.crop = CropBox(start_x, start_y, point[0], point[1]).normalized()
         elif self.drag_mode.startswith("resize:"):
             handle = self.drag_mode.split(":", 1)[1]
             self.crop = self._resize_crop(start_box, handle, point)
@@ -1503,9 +1622,7 @@ class PlotterApp(_TkBase):
             self._update_dimension_readout()
 
     def _on_canvas_release(self, _event) -> None:
-        crop_drag = self.drag_mode in {"move", "new"} or (
-            self.drag_mode is not None and self.drag_mode.startswith("resize:")
-        )
+        crop_drag = self.drag_mode is not None and self.drag_mode.startswith("resize:")
         if self.crop and crop_drag:
             self.crop = self._minimum_crop_size(self.crop.normalized())
             self._redraw_canvas()
@@ -1552,16 +1669,6 @@ class PlotterApp(_TkBase):
         )
         self._redraw_canvas()
 
-    def _move_crop(self, crop: CropBox, dx: float, dy: float) -> CropBox:
-        if not self.drawing:
-            return crop
-        bounds = self.drawing.bounds.normalized()
-        width = crop.width
-        height = crop.height
-        xmin = min(max(crop.xmin + dx, bounds.xmin), bounds.xmax - width)
-        ymin = min(max(crop.ymin + dy, bounds.ymin), bounds.ymax - height)
-        return CropBox(xmin, ymin, xmin + width, ymin + height)
-
     def _resize_crop(self, crop: CropBox, handle: str, point: tuple[float, float]) -> CropBox:
         xmin, ymin, xmax, ymax = crop.xmin, crop.ymin, crop.xmax, crop.ymax
         x, y = point
@@ -1605,16 +1712,6 @@ class PlotterApp(_TkBase):
         near_vertical = (abs(x - left) <= 7 or abs(x - right) <= 7) and top <= y <= bottom
         near_horizontal = (abs(y - top) <= 7 or abs(y - bottom) <= 7) and left <= x <= right
         return near_origin or near_vertical or near_horizontal
-
-    def _point_in_crop_canvas(self, x: float, y: float) -> bool:
-        if not self.crop:
-            return False
-        box = self.crop.normalized()
-        x1, y_bottom = self._source_to_canvas((box.xmin, box.ymin))
-        x2, y_top = self._source_to_canvas((box.xmax, box.ymax))
-        left, right = sorted((x1, x2))
-        top, bottom = sorted((y_top, y_bottom))
-        return left <= x <= right and top <= y <= bottom
 
     def _clamp_to_drawing(self, point: tuple[float, float]) -> tuple[float, float]:
         if not self.drawing:
@@ -1664,7 +1761,7 @@ class PlotterApp(_TkBase):
         )
 
     def _effective_curve_tolerance(self) -> float:
-        return max(0.05, self._current_curve_tolerance() / self._current_scale())
+        return max(0.05, self._current_curve_tolerance())
 
     def _buildplate_source_box(
         self, settings: PlotterSettings | None = None
@@ -1789,6 +1886,7 @@ class PlotterApp(_TkBase):
                 _settings_file_text(self.current_file) if self.current_file else None,
                 self.settings.recent_files,
             ),
+            recent_file_settings=self.settings.recent_file_settings,
             device_id=self.printer.key,
             home_x=self._float_from_var(self.home_x_var, self.settings.home_x),
             home_y=self._float_from_var(self.home_y_var, self.settings.home_y),
@@ -1836,6 +1934,21 @@ class PlotterApp(_TkBase):
         settings.validate()
         return settings
 
+    def _store_current_recent_file_settings(self, settings: PlotterSettings) -> None:
+        file_text = settings.active_file or _settings_file_text(self.current_file)
+        state = RecentFileSettings(
+            scale=settings.scale,
+            crop=settings.crop.normalized() if settings.crop else None,
+            origin_x=settings.origin_x,
+            origin_y=settings.origin_y,
+        )
+        settings.recent_file_settings = recent_file_settings_with(
+            file_text,
+            settings.recent_files,
+            settings.recent_file_settings,
+            state,
+        )
+
     def _float_from_var(
         self, variable: tk.StringVar, fallback: float, minimum: float | None = None
     ) -> float:
@@ -1861,11 +1974,12 @@ class PlotterApp(_TkBase):
     def _save_current_settings(self) -> None:
         try:
             settings = self._settings_from_ui()
+            self._store_current_recent_file_settings(settings)
             save_settings(settings, DEFAULT_SETTINGS_PATH)
             save_recent_files(
                 settings.recent_files,
                 DEFAULT_RECENTS_PATH,
-                settings.output_filename,
+                settings.recent_file_settings,
             )
         except Exception as exc:
             messagebox.showerror("Save settings failed", str(exc))
@@ -2077,6 +2191,27 @@ def _recent_file_texts_with(
         if len(recent) >= MAX_RECENT_FILES:
             break
     return recent
+
+
+def _recent_file_texts_without(
+    removed_file: str | None,
+    recent_files: list[str],
+) -> list[str]:
+    if not removed_file:
+        return list(recent_files)
+    removed_path = _resolve_project_path(removed_file)
+    if removed_path is None:
+        return list(recent_files)
+    removed_key = _normalized_path_text(removed_path)
+    kept: list[str] = []
+    for value in recent_files:
+        path = _resolve_project_path(value)
+        if path is None or _normalized_path_text(path) == removed_key:
+            continue
+        text = _settings_file_text(path)
+        if text:
+            kept.append(text)
+    return kept
 
 
 def _normalized_path_text(path: Path) -> str:

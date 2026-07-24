@@ -22,8 +22,12 @@ from pen_plotter.settings import (
     DEFAULT_RECENTS_PATH,
     DEFAULT_SETTINGS_PATH,
     CropBox,
+    RecentFileSettings,
+    apply_recent_file_settings,
     default_gcode_path,
     load_settings,
+    recent_file_settings_for,
+    recent_file_settings_with,
     save_recent_files,
     save_settings,
 )
@@ -43,7 +47,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "DXF path. Defaults to active_file or recent_files "
+            "DXF path. Defaults to the first file entry "
             "from config/recents.yaml."
         ),
     )
@@ -58,7 +62,7 @@ def parse_args() -> argparse.Namespace:
         "--target-directory",
         type=Path,
         default=None,
-        help="Directory for the saved output_filename when --output is omitted.",
+        help="Directory for the default G-code filename when --output is omitted.",
     )
     parser.add_argument(
         "--device",
@@ -142,6 +146,13 @@ def main() -> None:
         raise SystemExit("No DXF file found. Drop one in the UI or pass --input.")
     if not source.is_absolute():
         source = PROJECT_ROOT / source
+    source = source.resolve()
+
+    source_file_text = _settings_file_text(source)
+    recent_state = recent_file_settings_for(
+        source_file_text,
+        settings.recent_file_settings,
+    )
 
     for attr, value in (
         ("home_x", args.home_x),
@@ -163,7 +174,7 @@ def main() -> None:
             setattr(settings, attr, value)
     if args.target_directory is not None:
         settings.target_directory = str(args.target_directory)
-    settings.active_file = _settings_file_text(source)
+    settings.active_file = source_file_text
     settings.recent_files = _recent_file_texts_with(
         settings.active_file,
         settings.recent_files,
@@ -171,9 +182,18 @@ def main() -> None:
 
     drawing = load_dxf_drawing(
         source,
-        curve_tolerance=settings.curve_tolerance / max(settings.scale, 0.0001),
+        curve_tolerance=settings.curve_tolerance,
     )
     drawing = rotate_drawing_quarters(drawing, settings.rotation_quarters)
+    apply_recent_file_settings(settings, recent_state)
+    for attr, value in (
+        ("origin_x", args.origin_x),
+        ("origin_y", args.origin_y),
+        ("scale", args.scale),
+    ):
+        if value is not None:
+            setattr(settings, attr, value)
+
     if args.crop:
         crop = CropBox(*args.crop).normalized()
     elif settings.crop:
@@ -230,11 +250,22 @@ def main() -> None:
                 )
             )
             save_printer_profile(printer)
+        settings.recent_file_settings = recent_file_settings_with(
+            settings.active_file,
+            settings.recent_files,
+            settings.recent_file_settings,
+            RecentFileSettings(
+                scale=settings.scale,
+                crop=settings.crop.normalized() if settings.crop else None,
+                origin_x=settings.origin_x,
+                origin_y=settings.origin_y,
+            ),
+        )
         save_settings(settings, DEFAULT_SETTINGS_PATH)
         save_recent_files(
             settings.recent_files,
             DEFAULT_RECENTS_PATH,
-            settings.output_filename,
+            settings.recent_file_settings,
         )
 
     print(f"Wrote {summary.output_path}")

@@ -47,7 +47,7 @@ conda run -n raisim python scripts/run_ui.py
    after changing printer properties, then use **Settings** to choose the DXF,
    set scale, curve tolerance, rotate the DXF, and set bounding box settings.
 6. Press **Save Settings** to save slicer settings to `config/settings.yaml`
-   and file/output history to ignored `config/recents.yaml`.
+   and file crop/scale/origin history to ignored `config/recents.yaml`.
 7. Set the output **Filename** and choose **Target Directory**.
 8. Press **Generate**.
 
@@ -65,21 +65,24 @@ When a removable target is selected, **Clear Drive** removes existing `*.gcode`
 files from that drive before the new file is written, and **Eject** safely
 ejects it after a successful write.
 **Save Settings** writes slicer settings to `config/settings.yaml` and
-file/output history to ignored `config/recents.yaml` without generating G-code.
+file crop/scale/origin history to ignored `config/recents.yaml` without generating G-code.
 Dropped or selected DXF files are saved immediately in ignored
-`config/recents.yaml` as `active_file`, `output_filename`, and the last
-10 `recent_files`.
+`config/recents.yaml` as aligned `file`, `crop`, `scale`, and `origin` lists.
+Tolerance is global and saved in `config/settings.yaml`, independent of the
+selected DXF.
 
 ## CLI Workflow
 
-Generate using the current `config/recents.yaml` active/recent DXF:
+Generate using the first loadable `file` entry in `config/recents.yaml`:
 
 ```powershell
 conda run -n raisim python scripts/generate_cli.py
 ```
 
-Persist CLI values back to `config/settings.yaml`; device values such as Home,
-Z Height, and Speed are saved to the matching file in `config/devices/`:
+Persist CLI values back to the config files. Per-file scale, crop, and origin
+are saved to ignored `config/recents.yaml`; global tolerance is saved in
+`config/settings.yaml`; device values such as Home, Z Height, and Speed are
+saved to the matching file in `config/devices/`:
 
 ```powershell
 conda run -n raisim python scripts/generate_cli.py --scale 0.48 --home-x 0 --home-y 0 --origin-x 10 --origin-y 10 --save-settings

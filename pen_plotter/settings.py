@@ -97,9 +97,26 @@ class CropBox:
 
 
 @dataclass
+class RecentFileSettings:
+    scale: float | None = None
+    crop: CropBox | None = None
+    origin_x: float | None = None
+    origin_y: float | None = None
+
+    def has_values(self) -> bool:
+        return (
+            self.scale is not None
+            or self.crop is not None
+            or self.origin_x is not None
+            or self.origin_y is not None
+        )
+
+
+@dataclass
 class PlotterSettings:
     active_file: str | None = None
     recent_files: list[str] = field(default_factory=list)
+    recent_file_settings: dict[str, RecentFileSettings] = field(default_factory=dict)
     device_id: str = "CE3PRO"
     home_x: float = 0.0
     home_y: float = 0.0
@@ -133,11 +150,8 @@ class PlotterSettings:
             "home_x",
             "home_y",
             "home_z",
-            "origin_x",
-            "origin_y",
             "z_hop",
             "z_safe_height",
-            "scale",
             "rotation_quarters",
             "bounding_box_repeat",
             "bounding_box_offset",
@@ -171,34 +185,6 @@ class PlotterSettings:
                 except (TypeError, ValueError):
                     pass
 
-        settings.crop = CropBox.from_mapping(data.get("crop"))
-
-        # Migrate the older offset model:
-        # output = x_offset + (source - crop.xmin) * scale
-        # New model:
-        # output = home_x + (source - origin_x) * scale
-        if "home_z" not in data and "z_offset" in data:
-            try:
-                settings.home_z = float(data["z_offset"])
-            except (TypeError, ValueError):
-                pass
-        if (
-            settings.crop
-            and ("origin_x" not in data or "origin_y" not in data)
-            and ("x_offset" in data or "y_offset" in data)
-        ):
-            scale = max(settings.scale, 0.0001)
-            try:
-                x_offset = float(data.get("x_offset", 0.0))
-            except (TypeError, ValueError):
-                x_offset = 0.0
-            try:
-                y_offset = float(data.get("y_offset", 0.0))
-            except (TypeError, ValueError):
-                y_offset = 0.0
-            settings.origin_x = settings.crop.xmin - (x_offset - settings.home_x) / scale
-            settings.origin_y = settings.crop.ymin - (y_offset - settings.home_y) / scale
-
         settings.validate()
         return settings
 
@@ -218,6 +204,10 @@ class PlotterSettings:
         self.clear_before_write = bool(self.clear_before_write)
         self.eject_after_write = bool(self.eject_after_write)
         self.recent_files = _clean_recent_files(self.recent_files)
+        self.recent_file_settings = _clean_recent_file_settings(
+            self.recent_files,
+            self.recent_file_settings,
+        )
         if self.crop:
             self.crop = self.crop.normalized()
 
@@ -226,19 +216,22 @@ class PlotterSettings:
         data = asdict(self)
         data.pop("active_file", None)
         data.pop("recent_files", None)
+        data.pop("recent_file_settings", None)
         data.pop("output_filename", None)
         for key in (
             "home_x",
             "home_y",
             "home_z",
+            "origin_x",
+            "origin_y",
             "z_hop",
             "z_safe_height",
+            "scale",
             "draw_speed",
             "travel_speed",
+            "crop",
         ):
             data.pop(key, None)
-        if self.crop is None:
-            data["crop"] = None
         return data
 
 
@@ -259,6 +252,29 @@ def _clean_recent_files(recent_files: list[str]) -> list[str]:
     return cleaned
 
 
+def _clean_recent_file_settings(
+    recent_files: list[str],
+    file_settings: dict[str, RecentFileSettings] | None,
+) -> dict[str, RecentFileSettings]:
+    if not file_settings:
+        return {}
+
+    settings_by_key: dict[str, RecentFileSettings] = {}
+    for file_text, state in file_settings.items():
+        if not file_text:
+            continue
+        if state is None or not state.has_values():
+            continue
+        settings_by_key[_settings_path_key(str(file_text))] = state
+
+    cleaned: dict[str, RecentFileSettings] = {}
+    for file_text in _clean_recent_files(recent_files):
+        state = settings_by_key.get(_settings_path_key(file_text))
+        if state is not None and state.has_values():
+            cleaned[file_text] = state
+    return cleaned
+
+
 def _settings_path_key(value: str) -> str:
     path = Path(value).expanduser()
     if not path.is_absolute():
@@ -267,6 +283,18 @@ def _settings_path_key(value: str) -> str:
         return str(path.resolve()).casefold()
     except OSError:
         return str(path.absolute()).casefold()
+
+
+def _optional_float(value: Any, minimum: float | None = None) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if minimum is not None:
+        parsed = max(parsed, minimum)
+    return parsed
 
 
 def _bool_from_value(value: Any) -> bool:
@@ -278,27 +306,159 @@ def _bool_from_value(value: Any) -> bool:
     return text in {"1", "true", "yes", "on"}
 
 
+def recent_file_settings_for(
+    file_text: str | None,
+    file_settings: dict[str, RecentFileSettings] | None,
+) -> RecentFileSettings | None:
+    if not file_text or not file_settings:
+        return None
+    wanted_key = _settings_path_key(file_text)
+    for candidate_text, state in file_settings.items():
+        if _settings_path_key(candidate_text) == wanted_key:
+            return state
+    return None
+
+
+def recent_file_settings_with(
+    file_text: str | None,
+    recent_files: list[str],
+    file_settings: dict[str, RecentFileSettings] | None,
+    state: RecentFileSettings | None,
+) -> dict[str, RecentFileSettings]:
+    updated = dict(file_settings or {})
+    if file_text and state is not None and state.has_values():
+        wanted_key = _settings_path_key(file_text)
+        updated = {
+            candidate_text: candidate_state
+            for candidate_text, candidate_state in updated.items()
+            if _settings_path_key(candidate_text) != wanted_key
+        }
+        updated[file_text] = state
+    return _clean_recent_file_settings(recent_files, updated)
+
+
+def apply_recent_file_settings(
+    settings: PlotterSettings,
+    state: RecentFileSettings | None,
+) -> None:
+    if state is None:
+        return
+    if state.scale is not None:
+        settings.scale = state.scale
+    if state.origin_x is not None and state.origin_y is not None:
+        settings.origin_x = state.origin_x
+        settings.origin_y = state.origin_y
+    if state.crop is not None:
+        settings.crop = state.crop.normalized()
+    settings.validate()
+
+
+def _crop_from_recent_value(value: Any) -> CropBox | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    try:
+        xmin, xmax, ymin, ymax = [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+    return CropBox(xmin=xmin, ymin=ymin, xmax=xmax, ymax=ymax).normalized()
+
+
+def _crop_to_recent_value(crop: CropBox | None) -> list[float] | None:
+    if crop is None:
+        return None
+    box = crop.normalized()
+    return [box.xmin, box.xmax, box.ymin, box.ymax]
+
+
+def _origin_from_recent_value(value: Any) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    try:
+        return float(value[0]), float(value[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def _origin_to_recent_value(
+    origin_x: float | None,
+    origin_y: float | None,
+) -> list[float] | None:
+    if origin_x is None or origin_y is None:
+        return None
+    return [float(origin_x), float(origin_y)]
+
+
+def _recent_file_settings_from_lists(
+    file_values: list[Any],
+    crop_values: list[Any],
+    scale_values: list[Any],
+    origin_values: list[Any],
+) -> tuple[str | None, list[str], dict[str, RecentFileSettings]]:
+    recent_files: list[str] = []
+    file_settings: dict[str, RecentFileSettings] = {}
+    seen: set[str] = set()
+
+    for index, value in enumerate(file_values):
+        text = str(value).strip()
+        if not text:
+            continue
+        key = _settings_path_key(text)
+        if key in seen:
+            continue
+        seen.add(key)
+        recent_files.append(text)
+
+        state = RecentFileSettings()
+        if index < len(crop_values):
+            state.crop = _crop_from_recent_value(crop_values[index])
+        if index < len(scale_values):
+            state.scale = _optional_float(scale_values[index], minimum=0.0001)
+        if index < len(origin_values):
+            origin = _origin_from_recent_value(origin_values[index])
+            if origin is not None:
+                state.origin_x, state.origin_y = origin
+        if state.has_values():
+            file_settings[text] = state
+
+        if len(recent_files) >= MAX_RECENT_FILES:
+            break
+
+    return (recent_files[0] if recent_files else None), recent_files, file_settings
+
+
 def load_file_history(
     path: Path = DEFAULT_RECENTS_PATH,
-) -> tuple[str | None, list[str], str | None]:
+) -> tuple[str | None, list[str], str | None, dict[str, RecentFileSettings]]:
     if not path.exists():
-        return None, [], None
+        return None, [], None, {}
     with path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
     if not isinstance(data, dict):
-        return None, [], None
-    active_file = str(data["active_file"]) if data.get("active_file") else None
-    output_filename = (
-        str(data["output_filename"]).strip() if data.get("output_filename") else None
+        return None, [], None, {}
+    file_values = data.get("file", [])
+    crop_values = data.get("crop", [])
+    scale_values = data.get("scale", [])
+    origin_values = data.get("origin", [])
+    if not isinstance(file_values, list):
+        file_values = []
+    if not isinstance(crop_values, list):
+        crop_values = []
+    if not isinstance(scale_values, list):
+        scale_values = []
+    if not isinstance(origin_values, list):
+        origin_values = []
+
+    active_file, recent_files, file_settings = _recent_file_settings_from_lists(
+        file_values,
+        crop_values,
+        scale_values,
+        origin_values,
     )
-    recent_files = data.get("recent_files", [])
-    if not isinstance(recent_files, list):
-        recent_files = []
-    cleaned = _clean_recent_files(
-        ([active_file] if active_file else []) + [str(item) for item in recent_files]
-    )
-    active_file = active_file if active_file in cleaned else (cleaned[0] if cleaned else None)
-    return active_file, cleaned, output_filename or None
+    return active_file, recent_files, None, file_settings
 
 
 def load_recent_files(path: Path = DEFAULT_RECENTS_PATH) -> list[str]:
@@ -308,17 +468,33 @@ def load_recent_files(path: Path = DEFAULT_RECENTS_PATH) -> list[str]:
 def save_recent_files(
     recent_files: list[str],
     path: Path = DEFAULT_RECENTS_PATH,
-    output_filename: str | None = None,
+    file_settings: dict[str, RecentFileSettings] | None = None,
 ) -> None:
     cleaned = _clean_recent_files(recent_files)
-    output_filename = output_filename.strip() if output_filename else None
+    cleaned_file_settings = _clean_recent_file_settings(cleaned, file_settings)
+    crop_values: list[list[float] | None] = []
+    scale_values: list[float | None] = []
+    origin_values: list[list[float] | None] = []
+    for file_text in cleaned:
+        state = recent_file_settings_for(file_text, cleaned_file_settings)
+        crop_values.append(_crop_to_recent_value(state.crop) if state else None)
+        scale_values.append(
+            max(float(state.scale), 0.0001)
+            if state and state.scale is not None
+            else None
+        )
+        origin_values.append(
+            _origin_to_recent_value(state.origin_x, state.origin_y) if state else None
+        )
+
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(
             {
-                "active_file": cleaned[0] if cleaned else None,
-                "output_filename": output_filename or None,
-                "recent_files": cleaned,
+                "file": cleaned,
+                "crop": crop_values,
+                "scale": scale_values,
+                "origin": origin_values,
             },
             handle,
             sort_keys=False,
@@ -327,12 +503,13 @@ def save_recent_files(
 
 
 def load_settings(path: Path = DEFAULT_SETTINGS_PATH) -> PlotterSettings:
-    active_file, recent_files, output_filename = load_file_history()
+    active_file, recent_files, output_filename, recent_file_settings = load_file_history()
     if not path.exists():
         settings = PlotterSettings()
         settings.active_file = active_file
         settings.recent_files = recent_files
         settings.output_filename = output_filename
+        settings.recent_file_settings = recent_file_settings
         return settings
     with path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
@@ -343,6 +520,7 @@ def load_settings(path: Path = DEFAULT_SETTINGS_PATH) -> PlotterSettings:
     settings.active_file = active_file
     settings.recent_files = recent_files
     settings.output_filename = output_filename
+    settings.recent_file_settings = recent_file_settings
     return settings
 
 
